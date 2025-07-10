@@ -1,0 +1,31 @@
+[Unit]
+Description=S3Slower - S3 Client Latency Monitor
+Documentation=https://github.com/yourusername/s3slower
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/s3slower -C /etc/s3slower/s3slower.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+KillMode=process
+TimeoutStopSec=30
+
+# Security settings
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/proc /sys/kernel
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=s3slower
+
+[Install]
+WantedBy=multi-user.target 

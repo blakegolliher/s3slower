@@ -1,0 +1,28 @@
+# S3Slower Configuration File
+# This configuration enables Prometheus export of S3 latency metrics
+
+# Collection interval in seconds
+interval: 5
+
+# Minimum latency threshold in milliseconds
+# Only capture operations slower than this threshold (0 = capture all)
+min_latency_ms: 0
+
+# Process ID to monitor (optional)
+# If not specified, monitors all processes
+# pid: 1234
+
+# Enable debug logging
+debug: false
+
+# Drivers configuration
+# Enable Prometheus exporter
+prometheus:
+  prom_exporter_host: "::"  # Listen on all interfaces
+  prom_exporter_port: 9000
+  buffer_size: 1000
+
+# Optional: Enable console output as well
+# screen:
+#   table_format: true
+#   max_url_length: 50 

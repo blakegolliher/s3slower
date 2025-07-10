@@ -1,0 +1,13 @@
+include version.txt
+include s3slower.c
+include s3slower.yaml
+include requirements.txt
+include README.md
+include LICENSE
+recursive-include docs *
+recursive-include scripts *
+recursive-include systemd *
+recursive-include k8s *
+exclude tests/*
+exclude .git*
+exclude *.tar.gz 

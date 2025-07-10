@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-s3slower-config
+  namespace: monitoring
+data:
+  s3slower.yml: |
+    # S3Slower monitoring configuration for Prometheus
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - "s3slower.rules.yml"
+
+    scrape_configs:
+    - job_name: 's3slower'
+      scrape_interval: 5s
+      metrics_path: /metrics
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['monitoring']
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: s3slower
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        action: replace
+        target_label: kubernetes_node_name
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-s3slower-rules
+  namespace: monitoring
+data:
+  s3slower.rules.yml: |
+    groups:
+    - name: s3slower.rules
+      interval: 30s
+      rules:
+      # Recording rules for better query performance
+      - record: s3slower:request_rate_5m
+        expr: rate(s3slower_requests_total[5m])
+      
+      - record: s3slower:error_rate_5m
+        expr: rate(s3slower_request_errors_total[5m])
+      
+      - record: s3slower:throughput_bytes_5m
+        expr: rate(s3slower_request_bytes_total[5m]) + rate(s3slower_response_bytes_total[5m])
+
+      # Alerting rules
+      - alert: S3SlowerHighLatency
+        expr: s3slower_request_duration_ms > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: s3slower
+        annotations:
+          summary: "High S3 latency detected"
+          description: "Process {{ $labels.comm }} on {{ $labels.hostname }} has S3 {{ $labels.s3_operation }} latency of {{ $value }}ms for 5 minutes"
+
+      - alert: S3SlowerHighErrorRate
+        expr: s3slower:error_rate_5m > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          component: s3slower
+        annotations:
+          summary: "High S3 error rate detected"
+          description: "Process {{ $labels.comm }} on {{ $labels.hostname }} has S3 error rate of {{ $value }}/sec"
+
+      - alert: S3SlowerExporterDown
+        expr: up{job="s3slower"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: s3slower
+        annotations:
+          summary: "S3Slower exporter is down"
+          description: "S3Slower exporter on {{ $labels.kubernetes_node_name }} has been down for more than 1 minute"
+
+      - alert: S3SlowerVeryHighLatency
+        expr: s3slower_request_duration_max_ms > 5000
+        for: 1m
+        labels:
+          severity: critical
+          component: s3slower
+        annotations:
+          summary: "Very high S3 latency detected"
+          description: "Process {{ $labels.comm }} on {{ $labels.hostname }} has extremely high S3 {{ $labels.s3_operation }} latency of {{ $value }}ms" 

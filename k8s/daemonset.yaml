@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: s3slower-config
+  namespace: monitoring
+data:
+  s3slower.yaml: |
+    interval: 5
+    min_latency_ms: 0
+    debug: false
+    prometheus:
+      prom_exporter_host: "::"
+      prom_exporter_port: 9000
+      buffer_size: 1000
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: s3slower
+  namespace: monitoring
+  labels:
+    app: s3slower
+    version: v1.0.0
+spec:
+  selector:
+    matchLabels:
+      app: s3slower
+  template:
+    metadata:
+      labels:
+        app: s3slower
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+        prometheus.io/path: "/metrics"
+    spec:
+      hostPID: true
+      hostIPC: true
+      hostNetwork: true
+      serviceAccountName: s3slower
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: s3slower
+        image: s3slower:v1.0.0
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - SYS_ADMIN
+            - SYS_RESOURCE
+            - SYS_PTRACE
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        command:
+        - /usr/local/bin/s3slower
+        args:
+        - -C
+        - /etc/s3slower/s3slower.yaml
+        ports:
+        - containerPort: 9000
+          name: metrics
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /etc/s3slower
+          readOnly: true
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        - name: usr-src
+          mountPath: /usr/src
+          readOnly: true
+        - name: sys-kernel
+          mountPath: /sys/kernel
+          readOnly: true
+        - name: proc
+          mountPath: /proc
+        - name: boot
+          mountPath: /boot
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: s3slower-config
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+          type: Directory
+      - name: usr-src
+        hostPath:
+          path: /usr/src
+          type: Directory
+      - name: sys-kernel
+        hostPath:
+          path: /sys/kernel
+          type: Directory
+      - name: proc
+        hostPath:
+          path: /proc
+          type: Directory
+      - name: boot
+        hostPath:
+          path: /boot
+          type: Directory 
