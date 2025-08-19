@@ -189,12 +189,16 @@ class EnhancedS3StatsCollector:
         # Choose BPF program based on mode
         if self.use_enhanced:
             # Try different versions based on compatibility needs
+            ultra_minimal_file = base_path / "s3slower_ultra_minimal.c"
             simple_file = base_path / "s3slower_enhanced_simple.c"
             compat_file = base_path / "s3slower_enhanced_compat.c"
             stack_fixed_file = base_path / "s3slower_enhanced_stack_fixed.c"
             enhanced_file = base_path / "s3slower_enhanced.c"
             
-            if getattr(self.args, 'use_simple', False) and simple_file.exists():
+            if getattr(self.args, 'use_ultra_minimal', False) and ultra_minimal_file.exists():
+                bpf_file = ultra_minimal_file
+                logger.info("Using ultra-minimal BPF program (minimal stack usage)")
+            elif getattr(self.args, 'use_simple', False) and simple_file.exists():
                 bpf_file = simple_file
                 logger.info("Using simple BPF program (minimal features)")
             elif getattr(self.args, 'use_compat', False) and compat_file.exists():
@@ -496,7 +500,8 @@ class UniversalS3Monitor:
                  s3_only: bool = False,
                  debug: bool = False,
                  use_stack_fixed: bool = False,
-                 use_simple: bool = False):
+                 use_simple: bool = False,
+                 use_ultra_minimal: bool = False):
         """
         Initialize universal S3 monitor
         
@@ -516,6 +521,7 @@ class UniversalS3Monitor:
         args.debug = debug
         args.use_stack_fixed = use_stack_fixed
         args.use_simple = use_simple
+        args.use_ultra_minimal = use_ultra_minimal
         
         self.collector = EnhancedS3StatsCollector(args)
         self._attached = False
