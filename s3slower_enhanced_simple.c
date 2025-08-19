@@ -72,7 +72,8 @@ static inline int detect_s3_simple(const char *data, u32 len) {
     if (len < 20) return 0;
     
     // Simple scan for x-amz- pattern
-    for (int i = 0; i < len - 6 && i < 200; i++) {
+    for (int i = 0; i < 200; i++) {
+        if (i >= len - 6) break;
         if (data[i] == 'x' && data[i+1] == '-' && data[i+2] == 'a' && 
             data[i+3] == 'm' && data[i+4] == 'z' && data[i+5] == '-') {
             return 1;
@@ -121,13 +122,16 @@ int trace_write(struct pt_regs *ctx) {
     state.url_len = 0;
     
     // Copy data manually
-    for (int i = 0; i < MAX_BUFFER_SIZE && i < read_size; i++) {
-        state.data[i] = data[i];
+    for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+        if (i < read_size) {
+            state.data[i] = data[i];
+        }
     }
     
     // Find URL boundaries
     int space_count = 0;
-    for (int i = 0; i < read_size && i < 200; i++) {
+    for (int i = 0; i < 200; i++) {
+        if (i >= read_size) break;
         if (data[i] == ' ') {
             space_count++;
             if (space_count == 1) {
@@ -200,7 +204,8 @@ int trace_read(struct pt_regs *ctx) {
     
     // Extract URL
     if (state->url_len > 0 && state->url_len < 256 && state->url_offset < MAX_BUFFER_SIZE) {
-        for (int i = 0; i < state->url_len && i < 255; i++) {
+        for (int i = 0; i < 255; i++) {
+            if (i >= state->url_len) break;
             if (state->url_offset + i < MAX_BUFFER_SIZE) {
                 event.url[i] = state->data[state->url_offset + i];
             }
@@ -208,8 +213,10 @@ int trace_read(struct pt_regs *ctx) {
     }
     
     // Copy first segment data
-    for (int i = 0; i < MAX_BUFFER_SIZE && i < read_size; i++) {
-        event.data[i] = state->data[i];
+    for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+        if (i < read_size) {
+            event.data[i] = state->data[i];
+        }
     }
     
     // Simple S3 operation detection

@@ -210,8 +210,10 @@ static inline int handle_write_operation(struct pt_regs *ctx, u32 fd, const char
         new_state.segments[0].len = read_size;
         // Manual copy to avoid memcpy issues
         #pragma unroll
-        for (int i = 0; i < MAX_BUFFER_SIZE && i < read_size; i++) {
-            new_state.segments[0].data[i] = data[i];
+        for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+            if (i < read_size) {
+                new_state.segments[0].data[i] = data[i];
+            }
         }
         
         // Check for S3 patterns
@@ -242,8 +244,10 @@ static inline int handle_write_operation(struct pt_regs *ctx, u32 fd, const char
             state->segments[seg_idx].len = read_size;
             // Manual copy to avoid memcpy issues
             #pragma unroll
-            for (int i = 0; i < MAX_BUFFER_SIZE && i < read_size; i++) {
-                state->segments[seg_idx].data[i] = data[i];
+            for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+                if (i < read_size) {
+                    state->segments[seg_idx].data[i] = data[i];
+                }
             }
             state->num_segments++;
             
@@ -374,8 +378,10 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
         if (url_end <= MAX_BUFFER_SIZE) {
             u32 copy_len = state->url_len < 256 ? state->url_len : 255;
             #pragma unroll
-            for (int i = 0; i < 256 && i < copy_len; i++) {
-                event.url[i] = state->segments[0].data[state->url_offset + i];
+            for (int i = 0; i < 256; i++) {
+                if (i < copy_len) {
+                    event.url[i] = state->segments[0].data[state->url_offset + i];
+                }
             }
         }
     }
@@ -383,8 +389,10 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
     // Copy first segment data
     u32 data_len = state->segments[0].len;
     #pragma unroll
-    for (int i = 0; i < MAX_BUFFER_SIZE && i < data_len; i++) {
-        event.data[i] = state->segments[0].data[i];
+    for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+        if (i < data_len) {
+            event.data[i] = state->segments[0].data[i];
+        }
     }
     
     // Determine S3 operation type from URL and method
