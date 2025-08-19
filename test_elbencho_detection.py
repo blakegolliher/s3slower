@@ -99,7 +99,7 @@ def analyze_elbencho_traffic():
             logger.info(f"S3 events: {len(s3_events)}")
             
             if s3_events:
-                logger.success("✓ Successfully detected elbencho S3 traffic!")
+                logger.info("✓ Successfully detected elbencho S3 traffic!")
                 
                 # Show S3 operation breakdown
                 ops = {}

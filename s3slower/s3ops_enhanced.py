@@ -217,8 +217,15 @@ class EnhancedS3StatsCollector:
             logger.debug("BPF Program:\n" + bpf_text)
         
         # Initialize BPF
-        self.b = BPF(text=bpf_text)
-        logger.info("BPF program loaded successfully")
+        try:
+            self.b = BPF(text=bpf_text)
+            logger.info("BPF program loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to compile BPF program: {e}")
+            if "cannot call non-static helper function" in str(e):
+                logger.error("BPF compilation error: Functions must be static or inline")
+                logger.error("This is a known issue - please ensure you have the latest s3slower_enhanced.c")
+            raise
     
     def attach(self):
         """Attach eBPF probes to syscalls and kernel functions"""
