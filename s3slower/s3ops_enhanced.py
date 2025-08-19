@@ -188,11 +188,15 @@ class EnhancedS3StatsCollector:
         
         # Choose BPF program based on mode
         if self.use_enhanced:
-            # Try compatibility version first if memcpy errors occurred
+            # Try different versions based on compatibility needs
+            simple_file = base_path / "s3slower_enhanced_simple.c"
             compat_file = base_path / "s3slower_enhanced_compat.c"
             enhanced_file = base_path / "s3slower_enhanced.c"
             
-            if getattr(self.args, 'use_compat', False) and compat_file.exists():
+            if getattr(self.args, 'use_simple', False) and simple_file.exists():
+                bpf_file = simple_file
+                logger.info("Using simple BPF program (minimal features)")
+            elif getattr(self.args, 'use_compat', False) and compat_file.exists():
                 bpf_file = compat_file
                 logger.info("Using compatibility BPF program (no memcpy)")
             elif enhanced_file.exists():
@@ -229,18 +233,30 @@ class EnhancedS3StatsCollector:
             self.b = BPF(text=bpf_text)
             logger.info("BPF program loaded successfully")
         except Exception as e:
-            # Check if it's a memcpy error and we haven't tried compat mode yet
-            if "memcpy" in str(e) and self.use_enhanced and not getattr(self.args, 'use_compat', False):
-                logger.warning(f"BPF compilation failed with memcpy error: {e}")
-                logger.info("Retrying with compatibility BPF program...")
-                
-                # Retry with compatibility version
-                self.args.use_compat = True
-                self._load_bpf_program()
-                return
+            error_str = str(e)
+            
+            # Check for memcpy/memset errors and try simpler versions
+            if ("memcpy" in error_str or "memset" in error_str) and self.use_enhanced:
+                if not getattr(self.args, 'use_compat', False):
+                    logger.warning(f"BPF compilation failed with builtin function error: {e}")
+                    logger.info("Retrying with compatibility BPF program...")
+                    
+                    # Retry with compatibility version
+                    self.args.use_compat = True
+                    self._load_bpf_program()
+                    return
+                elif not getattr(self.args, 'use_simple', False):
+                    logger.warning("Compatibility version also failed")
+                    logger.info("Retrying with simple BPF program...")
+                    
+                    # Retry with simple version
+                    self.args.use_simple = True
+                    self.args.use_compat = False
+                    self._load_bpf_program()
+                    return
             
             logger.error(f"Failed to compile BPF program: {e}")
-            if "cannot call non-static helper function" in str(e):
+            if "cannot call non-static helper function" in error_str:
                 logger.error("BPF compilation error: Functions must be static or inline")
                 logger.error("This is a known issue - please ensure you have the latest s3slower_enhanced.c")
             raise

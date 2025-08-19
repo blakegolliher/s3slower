@@ -177,7 +177,7 @@ static inline int handle_write_operation(struct pt_regs *ctx, u32 fd, const char
     
     if (count < 3) return 0;  // Too small to be HTTP
     
-    char data[MAX_BUFFER_SIZE] = {};
+    char data[MAX_BUFFER_SIZE];
     u32 read_size = count > sizeof(data) ? sizeof(data) : count;
     if (bpf_probe_read_user(data, read_size, buf) != 0) return 0;
     
@@ -190,7 +190,22 @@ static inline int handle_write_operation(struct pt_regs *ctx, u32 fd, const char
         if (method == HTTP_UNKNOWN) return 0;
         
         // Initialize new request state
-        struct request_state new_state = {};
+        struct request_state new_state;
+        // Zero out the structure manually to avoid memset
+        new_state.start_ts = 0;
+        new_state.fd = 0;
+        new_state.total_req_size = 0;
+        new_state.total_resp_size = 0;
+        new_state.http_method = 0;
+        new_state.state = 0;
+        new_state.num_segments = 0;
+        new_state.is_s3 = 0;
+        new_state.url_offset = 0;
+        new_state.url_len = 0;
+        #pragma unroll
+        for (int i = 0; i < 256; i++) {
+            new_state.s3_headers[i] = 0;
+        }
         new_state.start_ts = bpf_ktime_get_ns();
         new_state.fd = fd;
         new_state.total_req_size = count;
@@ -311,7 +326,7 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
     
     if (count < 4) return 0;
     
-    char data[MAX_BUFFER_SIZE] = {};
+    char data[MAX_BUFFER_SIZE];
     u32 read_size = count > sizeof(data) ? sizeof(data) : count;
     if (bpf_probe_read_user(data, read_size, buf) != 0) return 0;
     
@@ -327,7 +342,30 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
     if (latency_us < MIN_LATENCY_US) return 0;
     
     // Prepare event
-    struct event_t event = {};
+    struct event_t event;
+    // Zero out critical fields
+    event.ts_us = 0;
+    event.latency_us = 0;
+    event.pid = 0;
+    event.tid = 0;
+    event.fd = 0;
+    event.req_size = 0;
+    event.resp_size = 0;
+    event.http_method = 0;
+    event.is_s3 = 0;
+    event.num_segments = 0;
+    #pragma unroll
+    for (int i = 0; i < TASK_COMM_LEN; i++) {
+        event.comm[i] = 0;
+    }
+    #pragma unroll
+    for (int i = 0; i < 256; i++) {
+        event.url[i] = 0;
+    }
+    #pragma unroll
+    for (int i = 0; i < 64; i++) {
+        event.s3_operation[i] = 0;
+    }
     event.ts_us = end_ts / 1000;
     event.latency_us = latency_us;
     event.pid = pid;
