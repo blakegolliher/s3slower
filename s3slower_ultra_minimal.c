@@ -204,7 +204,10 @@ int trace_read(struct pt_regs *ctx, int fd, void __user *buf, size_t count) {
     
     bpf_get_current_comm(&event.comm, sizeof(event.comm));
     
-    // Copy URL
+    // Clear URL buffer first, then copy from state
+    for (int i = 0; i < 64; i++) {
+        event.url[i] = 0;
+    }
     for (int i = 0; i < 64; i++) {
         event.url[i] = state->url[i];
     }
