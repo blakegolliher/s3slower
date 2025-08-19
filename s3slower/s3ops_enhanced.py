@@ -495,7 +495,8 @@ class UniversalS3Monitor:
                  enhanced: bool = True,
                  s3_only: bool = False,
                  debug: bool = False,
-                 use_stack_fixed: bool = False):
+                 use_stack_fixed: bool = False,
+                 use_simple: bool = False):
         """
         Initialize universal S3 monitor
         
@@ -514,6 +515,7 @@ class UniversalS3Monitor:
         args.s3_only = s3_only
         args.debug = debug
         args.use_stack_fixed = use_stack_fixed
+        args.use_simple = use_simple
         
         self.collector = EnhancedS3StatsCollector(args)
         self._attached = False

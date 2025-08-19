@@ -312,7 +312,7 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
     
     // Use smaller buffer to save stack space
     char data[MAX_BUFFER_SIZE];
-    // Manual zeroing
+    // Manual zeroing - avoid implicit memset
     #pragma unroll
     for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
         data[i] = 0;
