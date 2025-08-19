@@ -112,8 +112,10 @@ static inline int detect_s3_patterns(const char *data, u32 len, struct request_s
     int is_s3 = 0;
     
     // Look for S3-specific headers
-    #pragma unroll
-    for (int i = 0; i < len - 10; i++) {
+    #pragma unroll 512
+    for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+        if (i >= len - 10) break;
+        
         // Check for x-amz- headers
         if (i + 6 < len && data[i] == 'x' && data[i+1] == '-' && data[i+2] == 'a' && 
             data[i+3] == 'm' && data[i+4] == 'z' && data[i+5] == '-') {
@@ -122,8 +124,12 @@ static inline int detect_s3_patterns(const char *data, u32 len, struct request_s
             // Try to capture the header name
             int j = i;
             int k = 0;
-            while (j < len && k < 255 && data[j] != '\r' && data[j] != '\n') {
-                state->s3_headers[k++] = data[j++];
+            #pragma unroll 256
+            for (int idx = 0; idx < 256; idx++) {
+                if (j >= len || data[j] == '\r' || data[j] == '\n') break;
+                if (k < 255) {
+                    state->s3_headers[k++] = data[j++];
+                }
             }
             state->s3_headers[k] = '\0';
             break;
@@ -143,8 +149,10 @@ static inline int detect_s3_patterns(const char *data, u32 len, struct request_s
         if (i + 7 < len && data[i] == '/' && data[i+1] != ' ' && data[i+1] != '/') {
             // Look for ?partNumber= or ?uploadId= patterns
             int j = i;
-            while (j < len - 12) {
-                if (data[j] == '?' && (
+            #pragma unroll 128
+            for (int idx = 0; idx < 128; idx++) {
+                if (j >= len - 12) break;
+                if (data[j] == '?' && j + 12 < len && (
                     (data[j+1] == 'p' && data[j+2] == 'a' && data[j+3] == 'r' && data[j+4] == 't') ||
                     (data[j+1] == 'u' && data[j+2] == 'p' && data[j+3] == 'l' && data[j+4] == 'o'))) {
                     is_s3 = 1;
@@ -194,8 +202,9 @@ static inline int handle_write_operation(struct pt_regs *ctx, u32 fd, const char
         new_state.segments[0].offset = 0;
         new_state.segments[0].len = read_size;
         // Manual copy to avoid memcpy issues
-        #pragma unroll
-        for (int i = 0; i < MAX_BUFFER_SIZE && i < read_size; i++) {
+        #pragma unroll 512
+        for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+            if (i >= read_size) break;
             new_state.segments[0].data[i] = data[i];
         }
         
@@ -204,8 +213,9 @@ static inline int handle_write_operation(struct pt_regs *ctx, u32 fd, const char
         
         // Extract URL if visible in first segment
         int url_start = -1;
-        #pragma unroll
-        for (int i = 0; i < read_size - 1; i++) {
+        #pragma unroll 512
+        for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+            if (i >= read_size - 1) break;
             if (data[i] == ' ' && url_start == -1) {
                 url_start = i + 1;
                 new_state.url_offset = url_start;
@@ -226,8 +236,9 @@ static inline int handle_write_operation(struct pt_regs *ctx, u32 fd, const char
             state->segments[seg_idx].offset = state->total_req_size - count;
             state->segments[seg_idx].len = read_size;
             // Manual copy to avoid memcpy issues
-            #pragma unroll
-            for (int i = 0; i < MAX_BUFFER_SIZE && i < read_size; i++) {
+            #pragma unroll 512
+            for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+                if (i >= read_size) break;
                 state->segments[seg_idx].data[i] = data[i];
             }
             state->num_segments++;
@@ -335,8 +346,9 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
         u32 url_end = state->url_offset + state->url_len;
         if (url_end <= MAX_BUFFER_SIZE) {
             u32 copy_len = state->url_len < 256 ? state->url_len : 255;
-            #pragma unroll
-            for (int i = 0; i < 256 && i < copy_len; i++) {
+            #pragma unroll 256
+            for (int i = 0; i < 256; i++) {
+                if (i >= copy_len) break;
                 event.url[i] = state->segments[0].data[state->url_offset + i];
             }
         }
@@ -344,46 +356,78 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
     
     // Copy first segment data
     u32 data_len = state->segments[0].len;
-    #pragma unroll
-    for (int i = 0; i < MAX_BUFFER_SIZE && i < data_len; i++) {
+    #pragma unroll 512
+    for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+        if (i >= data_len) break;
         event.data[i] = state->segments[0].data[i];
     }
     
     // Determine S3 operation type from URL and method
     if (state->is_s3) {
+        // Initialize s3_operation to empty
+        #pragma unroll 64
+        for (int i = 0; i < 64; i++) {
+            event.s3_operation[i] = 0;
+        }
+        
         if (state->http_method == HTTP_GET) {
-            char op[] = "GetObject";
-            #pragma unroll
-            for (int i = 0; i < 10; i++) {
-                event.s3_operation[i] = op[i];
-            }
+            event.s3_operation[0] = 'G';
+            event.s3_operation[1] = 'e';
+            event.s3_operation[2] = 't';
+            event.s3_operation[3] = 'O';
+            event.s3_operation[4] = 'b';
+            event.s3_operation[5] = 'j';
+            event.s3_operation[6] = 'e';
+            event.s3_operation[7] = 'c';
+            event.s3_operation[8] = 't';
         } else if (state->http_method == HTTP_PUT) {
-            char op[] = "PutObject";
-            #pragma unroll
-            for (int i = 0; i < 10; i++) {
-                event.s3_operation[i] = op[i];
-            }
+            event.s3_operation[0] = 'P';
+            event.s3_operation[1] = 'u';
+            event.s3_operation[2] = 't';
+            event.s3_operation[3] = 'O';
+            event.s3_operation[4] = 'b';
+            event.s3_operation[5] = 'j';
+            event.s3_operation[6] = 'e';
+            event.s3_operation[7] = 'c';
+            event.s3_operation[8] = 't';
         } else if (state->http_method == HTTP_DELETE) {
-            char op[] = "DeleteObject";
-            #pragma unroll
-            for (int i = 0; i < 13; i++) {
-                event.s3_operation[i] = op[i];
-            }
+            event.s3_operation[0] = 'D';
+            event.s3_operation[1] = 'e';
+            event.s3_operation[2] = 'l';
+            event.s3_operation[3] = 'e';
+            event.s3_operation[4] = 't';
+            event.s3_operation[5] = 'e';
+            event.s3_operation[6] = 'O';
+            event.s3_operation[7] = 'b';
+            event.s3_operation[8] = 'j';
+            event.s3_operation[9] = 'e';
+            event.s3_operation[10] = 'c';
+            event.s3_operation[11] = 't';
         } else if (state->http_method == HTTP_HEAD) {
-            char op[] = "HeadObject";
-            #pragma unroll
-            for (int i = 0; i < 11; i++) {
-                event.s3_operation[i] = op[i];
-            }
+            event.s3_operation[0] = 'H';
+            event.s3_operation[1] = 'e';
+            event.s3_operation[2] = 'a';
+            event.s3_operation[3] = 'd';
+            event.s3_operation[4] = 'O';
+            event.s3_operation[5] = 'b';
+            event.s3_operation[6] = 'j';
+            event.s3_operation[7] = 'e';
+            event.s3_operation[8] = 'c';
+            event.s3_operation[9] = 't';
         } else if (state->http_method == HTTP_POST) {
             // Could be various operations - need to check URL
             if (state->url_len > 0) {
                 // Simple heuristic - if URL contains "?uploads" it's multipart
-                char op[] = "PostObject";
-                #pragma unroll
-                for (int i = 0; i < 11; i++) {
-                    event.s3_operation[i] = op[i];
-                }
+                event.s3_operation[0] = 'P';
+                event.s3_operation[1] = 'o';
+                event.s3_operation[2] = 's';
+                event.s3_operation[3] = 't';
+                event.s3_operation[4] = 'O';
+                event.s3_operation[5] = 'b';
+                event.s3_operation[6] = 'j';
+                event.s3_operation[7] = 'e';
+                event.s3_operation[8] = 'c';
+                event.s3_operation[9] = 't';
             }
         }
     }

@@ -188,8 +188,16 @@ class EnhancedS3StatsCollector:
         
         # Choose BPF program based on mode
         if self.use_enhanced:
-            bpf_file = base_path / "s3slower_enhanced.c"
-            if not bpf_file.exists():
+            # Try compatibility version first if memcpy errors occurred
+            compat_file = base_path / "s3slower_enhanced_compat.c"
+            enhanced_file = base_path / "s3slower_enhanced.c"
+            
+            if getattr(self.args, 'use_compat', False) and compat_file.exists():
+                bpf_file = compat_file
+                logger.info("Using compatibility BPF program (no memcpy)")
+            elif enhanced_file.exists():
+                bpf_file = enhanced_file
+            else:
                 logger.warning("Enhanced BPF not found, falling back to original")
                 bpf_file = base_path / "s3slower.c"
                 self.use_enhanced = False
@@ -221,6 +229,16 @@ class EnhancedS3StatsCollector:
             self.b = BPF(text=bpf_text)
             logger.info("BPF program loaded successfully")
         except Exception as e:
+            # Check if it's a memcpy error and we haven't tried compat mode yet
+            if "memcpy" in str(e) and self.use_enhanced and not getattr(self.args, 'use_compat', False):
+                logger.warning(f"BPF compilation failed with memcpy error: {e}")
+                logger.info("Retrying with compatibility BPF program...")
+                
+                # Retry with compatibility version
+                self.args.use_compat = True
+                self._load_bpf_program()
+                return
+            
             logger.error(f"Failed to compile BPF program: {e}")
             if "cannot call non-static helper function" in str(e):
                 logger.error("BPF compilation error: Functions must be static or inline")
