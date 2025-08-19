@@ -432,5 +432,8 @@ int trace_recvfrom(struct pt_regs *ctx, int fd, void __user *buf, size_t len, in
 
 // Trace recvmsg syscall
 int trace_recvmsg(struct pt_regs *ctx, int fd, struct msghdr __user *msg, int flags) {
-    return handle_read_operation(ctx, fd, buf, len);
+    // For recvmsg, we can't easily extract the buffer, so just track the call
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (TARGET_PID != 0 && pid != TARGET_PID) return 0;
+    return 0;
 }
