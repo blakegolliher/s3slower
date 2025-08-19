@@ -210,10 +210,33 @@ static inline int handle_write_operation(struct pt_regs *ctx, int fd, const char
     if (!state) {
         // New request - use smaller struct to save stack
         struct request_state new_state;
-        // Manual zeroing
+        // Manual zeroing - initialize each field individually
+        new_state.start_ts = 0;
+        new_state.fd = 0;
+        new_state.total_req_size = 0;
+        new_state.total_resp_size = 0;
+        new_state.http_method = 0;
+        new_state.state = 0;
+        new_state.num_segments = 0;
+        new_state.is_s3 = 0;
+        new_state.url_offset = 0;
+        new_state.url_len = 0;
+        
+        // Zero out segments array
         #pragma unroll
-        for (int i = 0; i < sizeof(struct request_state); i++) {
-            ((char*)&new_state)[i] = 0;
+        for (int i = 0; i < MAX_HTTP_SEGMENTS; i++) {
+            new_state.segments[i].offset = 0;
+            new_state.segments[i].len = 0;
+            #pragma unroll
+            for (int j = 0; j < MAX_BUFFER_SIZE; j++) {
+                new_state.segments[i].data[j] = 0;
+            }
+        }
+        
+        // Zero out s3_headers
+        #pragma unroll
+        for (int i = 0; i < 128; i++) {
+            new_state.s3_headers[i] = 0;
         }
         
         new_state.start_ts = bpf_ktime_get_ns();
@@ -310,10 +333,40 @@ static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user
     if (latency_us < MIN_LATENCY_US) return 0;
     
     struct event_t event;
-    // Zero out critical fields
+    // Zero out critical fields - initialize each field individually
+    event.ts_us = 0;
+    event.latency_us = 0;
+    event.pid = 0;
+    event.tid = 0;
+    event.fd = 0;
+    event.req_size = 0;
+    event.resp_size = 0;
+    event.http_method = 0;
+    event.is_s3 = 0;
+    event.num_segments = 0;
+    
+    // Zero out comm
     #pragma unroll
-    for (int i = 0; i < sizeof(struct event_t); i++) {
-        ((char*)&event)[i] = 0;
+    for (int i = 0; i < TASK_COMM_LEN; i++) {
+        event.comm[i] = 0;
+    }
+    
+    // Zero out url
+    #pragma unroll
+    for (int i = 0; i < 128; i++) {
+        event.url[i] = 0;
+    }
+    
+    // Zero out s3_operation
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        event.s3_operation[i] = 0;
+    }
+    
+    // Zero out data
+    #pragma unroll
+    for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+        event.data[i] = 0;
     }
     
     event.ts_us = end_ts / 1000;
