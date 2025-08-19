@@ -191,6 +191,7 @@ class EnhancedS3StatsCollector:
             # Try different versions based on compatibility needs
             simple_file = base_path / "s3slower_enhanced_simple.c"
             compat_file = base_path / "s3slower_enhanced_compat.c"
+            stack_fixed_file = base_path / "s3slower_enhanced_stack_fixed.c"
             enhanced_file = base_path / "s3slower_enhanced.c"
             
             if getattr(self.args, 'use_simple', False) and simple_file.exists():
@@ -199,6 +200,9 @@ class EnhancedS3StatsCollector:
             elif getattr(self.args, 'use_compat', False) and compat_file.exists():
                 bpf_file = compat_file
                 logger.info("Using compatibility BPF program (no memcpy)")
+            elif stack_fixed_file.exists():
+                bpf_file = stack_fixed_file
+                logger.info("Using stack-fixed BPF program (reduced stack usage)")
             elif enhanced_file.exists():
                 bpf_file = enhanced_file
             else:
@@ -252,6 +256,16 @@ class EnhancedS3StatsCollector:
                     # Retry with simple version
                     self.args.use_simple = True
                     self.args.use_compat = False
+                    self._load_bpf_program()
+                    return
+            # Check for stack limit errors and try stack-fixed version
+            elif "BPF stack limit is exceeded" in error_str and self.use_enhanced:
+                if not getattr(self.args, 'use_stack_fixed', False):
+                    logger.warning(f"BPF compilation failed with stack limit error: {e}")
+                    logger.info("Retrying with stack-fixed BPF program...")
+                    
+                    # Retry with stack-fixed version
+                    self.args.use_stack_fixed = True
                     self._load_bpf_program()
                     return
             
@@ -480,7 +494,8 @@ class UniversalS3Monitor:
                  min_latency_ms: int = 0,
                  enhanced: bool = True,
                  s3_only: bool = False,
-                 debug: bool = False):
+                 debug: bool = False,
+                 use_stack_fixed: bool = False):
         """
         Initialize universal S3 monitor
         
@@ -498,6 +513,7 @@ class UniversalS3Monitor:
         args.enhanced = enhanced
         args.s3_only = s3_only
         args.debug = debug
+        args.use_stack_fixed = use_stack_fixed
         
         self.collector = EnhancedS3StatsCollector(args)
         self._attached = False
