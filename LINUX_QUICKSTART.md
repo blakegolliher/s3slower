@@ -59,6 +59,7 @@ sudo python3 debug_s3_detection.py --check-process elbencho
 
 ## Notes
 - The "sh: 1: Syntax error" message can be ignored - it's non-critical
+- If you get a "memcpy is not supported" error, the program will automatically retry with a compatibility version
 - Make sure to use HTTP (not HTTPS) endpoints
 - Run all scripts with sudo for BPF access
 
