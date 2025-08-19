@@ -97,37 +97,7 @@ static inline int detect_s3_patterns(const char *data, u32 len) {
     return 0;
 }
 
-// Minimal URL extraction
-static inline void extract_url(const char *data, u32 len, char *url, u32 url_size) {
-    int url_start = -1;
-    int url_end = -1;
-    
-    // Find URL start (after first space)
-    for (int i = 0; i < len - 1; i++) {
-        if (data[i] == ' ' && url_start == -1) {
-            url_start = i + 1;
-        } else if (data[i] == ' ' && url_start != -1) {
-            url_end = i;
-            break;
-        }
-    }
-    
-    if (url_start != -1 && url_end == -1) {
-        url_end = len;
-    }
-    
-    if (url_start != -1 && url_end != -1) {
-        u32 copy_len = url_end - url_start;
-        if (copy_len > url_size - 1) copy_len = url_size - 1;
-        
-        for (int i = 0; i < copy_len; i++) {
-            url[i] = data[url_start + i];
-        }
-        url[copy_len] = 0;
-    } else {
-        url[0] = 0;
-    }
-}
+
 
 // Trace write syscall
 int trace_write(struct pt_regs *ctx, int fd, const char __user *buf, size_t count) {
@@ -151,15 +121,45 @@ int trace_write(struct pt_regs *ctx, int fd, const char __user *buf, size_t coun
     struct request_state *state = request_states.lookup(&key);
     
     if (!state) {
-        // New request
+        // New request - manually initialize to avoid memset
         struct request_state new_state;
         new_state.start_ts = bpf_ktime_get_ns();
         new_state.fd = fd;
         new_state.http_method = method;
         new_state.is_s3 = detect_s3_patterns(data, read_size);
         
-        // Extract URL
-        extract_url(data, read_size, new_state.url, sizeof(new_state.url));
+        // Manually extract URL to avoid memcpy
+        int url_start = -1;
+        int url_end = -1;
+        
+        // Find URL start (after first space)
+        for (int i = 0; i < read_size - 1; i++) {
+            if (data[i] == ' ' && url_start == -1) {
+                url_start = i + 1;
+            } else if (data[i] == ' ' && url_start != -1) {
+                url_end = i;
+                break;
+            }
+        }
+        
+        if (url_start != -1 && url_end == -1) {
+            url_end = read_size;
+        }
+        
+        // Clear URL buffer first
+        for (int i = 0; i < 64; i++) {
+            new_state.url[i] = 0;
+        }
+        
+        // Copy URL manually
+        if (url_start != -1 && url_end != -1) {
+            int copy_len = url_end - url_start;
+            if (copy_len > 63) copy_len = 63;
+            
+            for (int i = 0; i < copy_len; i++) {
+                new_state.url[i] = data[url_start + i];
+            }
+        }
         
         request_states.update(&key, &new_state);
     }
