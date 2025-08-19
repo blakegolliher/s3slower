@@ -282,17 +282,13 @@ int trace_tcp_sendmsg(struct pt_regs *ctx) {
     return 0;
 }
 
-// Enhanced read handler
-int trace_read(struct pt_regs *ctx) {
+// Helper function to handle read operations - must be static inline for BPF
+static inline int handle_read_operation(struct pt_regs *ctx, int fd, void __user *buf, size_t count) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = pid_tgid >> 32;
     u32 tid = (u32)pid_tgid;
     
     if (TARGET_PID != 0 && pid != TARGET_PID) return 0;
-    
-    int fd = (int)ctx->di;
-    void __user *buf = (void *)ctx->si;
-    size_t count = (size_t)ctx->dx;
     
     if (count < 4) return 0;
     
@@ -363,11 +359,28 @@ int trace_read(struct pt_regs *ctx) {
     return 0;
 }
 
+// Enhanced read handler
+int trace_read(struct pt_regs *ctx) {
+    int fd = (int)ctx->di;
+    void __user *buf = (void *)ctx->si;
+    size_t count = (size_t)ctx->dx;
+    
+    return handle_read_operation(ctx, fd, buf, count);
+}
+
 // Similar handlers for recv, recvfrom, recvmsg...
 int trace_recv(struct pt_regs *ctx) {
-    return trace_read(ctx);
+    int fd = (int)ctx->di;
+    void __user *buf = (void *)ctx->si;
+    size_t count = (size_t)ctx->dx;
+    
+    return handle_read_operation(ctx, fd, buf, count);
 }
 
 int trace_recvfrom(struct pt_regs *ctx) {
-    return trace_read(ctx);
+    int fd = (int)ctx->di;
+    void __user *buf = (void *)ctx->si;
+    size_t count = (size_t)ctx->dx;
+    
+    return handle_read_operation(ctx, fd, buf, count);
 }
