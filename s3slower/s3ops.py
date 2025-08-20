@@ -42,6 +42,16 @@ STATKEYS = {
 class S3Event:
     """Represents a single S3 request/response event"""
     
+    # Client type constants
+    CLIENT_TYPES = {
+        0: "unknown",
+        1: "warp", 
+        2: "elbencho",
+        3: "boto3",
+        4: "s3cmd",
+        5: "awscli"
+    }
+    
     def __init__(self, raw_event):
         self.timestamp = raw_event.ts_us
         self.latency_us = raw_event.latency_us
@@ -52,7 +62,9 @@ class S3Event:
         self.comm = raw_event.comm.decode('utf-8', 'replace')
         self.req_size = raw_event.req_size
         self.resp_size = raw_event.resp_size
+        self.actual_resp_bytes = raw_event.actual_resp_bytes
         self.is_partial = bool(raw_event.is_partial)
+        self.client_type = self.CLIENT_TYPES.get(raw_event.client_type, "unknown")
         self.raw_data = bytes(raw_event.data[:64])
         
         # Extract HTTP method, URL, and S3 operation
@@ -66,11 +78,13 @@ class S3Event:
             'pid': self.pid,
             'tid': self.tid,
             'comm': self.comm,
+            'client_type': self.client_type,
             'method': self.method,
             'url': self.url,
             's3_operation': self.s3_operation,
             'req_size': self.req_size,
             'resp_size': self.resp_size,
+            'actual_resp_bytes': self.actual_resp_bytes,
             'is_partial': self.is_partial,
         }
 
@@ -120,13 +134,13 @@ class S3StatsCollector:
     
     def attach(self):
         """Attach eBPF probes to syscalls"""
-        if not self.b:
+        if self.b is None:
             raise RuntimeError("BPF program not loaded")
         
         attached_probes = []
         
-        # Attach to write syscalls for detecting HTTP requests
-        write_syscalls = ["ksys_write", "__x64_sys_write", "__sys_sendto"]
+        # Attach to write/send syscalls for detecting HTTP requests
+        write_syscalls = ["ksys_write", "__x64_sys_write", "__x64_sys_sendto", "__sys_sendmsg"]
         for syscall in write_syscalls:
             try:
                 self.b.attach_kprobe(event=syscall, fn_name="trace_write")
@@ -135,13 +149,15 @@ class S3StatsCollector:
             except Exception as e:
                 logger.debug(f"✗ Failed to attach to {syscall}: {e}")
         
-        # Attach to read syscalls for detecting HTTP responses
-        read_syscalls = ["ksys_read", "__x64_sys_read", "__sys_recvfrom"] 
+        # Attach to read/recv syscalls for detecting HTTP responses
+        read_syscalls = ["ksys_read", "__x64_sys_read", "__x64_sys_recvfrom", "__sys_recvmsg"] 
         for syscall in read_syscalls:
             try:
                 self.b.attach_kprobe(event=syscall, fn_name="trace_read")
+                self.b.attach_kretprobe(event=syscall, fn_name="trace_read_ret")
                 attached_probes.append(f"kprobe:{syscall}")
-                logger.debug(f"✓ Attached to {syscall}")
+                attached_probes.append(f"kretprobe:{syscall}")
+                logger.debug(f"✓ Attached to {syscall} (entry and return)")
             except Exception as e:
                 logger.debug(f"✗ Failed to attach to {syscall}: {e}")
         
@@ -153,7 +169,7 @@ class S3StatsCollector:
     
     def start(self):
         """Start collecting events"""
-        if not self.b:
+        if self.b is None:
             raise RuntimeError("BPF program not loaded")
         
         self.b["events"].open_perf_buffer(self._handle_event)
@@ -178,7 +194,7 @@ class S3StatsCollector:
             # Only process events with valid HTTP data
             if event.method != "?" and event.url != "?":
                 self.events.append(event)
-                logger.debug(f"Captured S3 {event.s3_operation} latency: {event.latency_ms:.1f}ms")
+                logger.debug(f"Captured {event.client_type} S3 {event.s3_operation} latency: {event.latency_ms:.1f}ms")
         except Exception as e:
             logger.debug(f"Error processing event: {e}")
     
@@ -186,7 +202,11 @@ class S3StatsCollector:
         """Main event collection loop"""
         while not self._stop_collection:
             try:
-                self.b.perf_buffer_poll(timeout_ms=100)
+                # BCC API changed - timeout parameter name varies
+                try:
+                    self.b.perf_buffer_poll(timeout=100)
+                except TypeError:
+                    self.b.perf_buffer_poll(100)
             except Exception as e:
                 if not self._stop_collection:
                     logger.error(f"Error in collection loop: {e}")
@@ -214,7 +234,7 @@ class S3StatsCollector:
             self.events.clear()
         
         # Group by relevant fields and aggregate
-        group_fields = ['comm', 's3_operation', 'method']
+        group_fields = ['comm', 'client_type', 's3_operation', 'method']
         
         # Aggregate statistics
         agg_stats = df.groupby(group_fields).agg({
@@ -227,7 +247,7 @@ class S3StatsCollector:
         
         # Flatten column names
         agg_stats.columns = [
-            'COMM', 'S3_OPERATION', 'METHOD',
+            'COMM', 'CLIENT_TYPE', 'S3_OPERATION', 'METHOD',
             'REQUEST_COUNT', 'TOTAL_LATENCY_MS', 'MIN_LATENCY_MS', 'MAX_LATENCY_MS',
             'REQUEST_BYTES', 'RESPONSE_BYTES', 'PARTIAL_REQUESTS', 'PID'
         ]

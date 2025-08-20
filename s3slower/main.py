@@ -43,6 +43,23 @@ else:
 
 available_drivers = sorted(set([e.name for e in ENTRYPOINTS]))
 
+# Fallback for development/direct execution without installation
+if not available_drivers:
+    # Import drivers directly
+    from s3slower.drivers import ScreenDriver, PrometheusDriver
+    
+    # Create mock entry points for development
+    class MockEntryPoint:
+        def __init__(self, name, plugin):
+            self.name = name
+            self.plugin = plugin
+            
+    ENTRYPOINTS = [
+        MockEntryPoint("screen", ScreenDriver),
+        MockEntryPoint("prometheus", PrometheusDriver),
+    ]
+    available_drivers = ["screen", "prometheus"]
+
 
 def validate_args(conf_args=None):
     """
@@ -57,8 +74,13 @@ def validate_args(conf_args=None):
     all_keys = conf_keys + cli_keys
 
     all_options = set()
-    mgr = ExtensionManager(namespace=ENTRYPOINT_GROUP)
-    all_parsers = [conf_parser] + [ext.plugin.parser for ext in mgr.extensions]
+    if available_drivers == ["screen", "prometheus"]:
+        # Development mode - import parsers directly
+        from s3slower.drivers import ScreenDriver, PrometheusDriver
+        all_parsers = [conf_parser, ScreenDriver.parser, PrometheusDriver.parser]
+    else:
+        mgr = ExtensionManager(namespace=ENTRYPOINT_GROUP)
+        all_parsers = [conf_parser] + [ext.plugin.parser for ext in mgr.extensions]
 
     # Collect all options from all parsers
     for parser in all_parsers:
@@ -92,9 +114,15 @@ class HelpFormatter(argparse.HelpFormatter):
         ]
         
         # Add extension parsers
-        mgr = ExtensionManager(namespace=ENTRYPOINT_GROUP)
-        for ext in mgr.extensions:
-            all_parsers.append((f"{ext.plugin.__name__} Options", ext.plugin.parser))
+        if available_drivers == ["screen", "prometheus"]:
+            # Development mode
+            from s3slower.drivers import ScreenDriver, PrometheusDriver
+            all_parsers.append(("ScreenDriver Options", ScreenDriver.parser))
+            all_parsers.append(("PrometheusDriver Options", PrometheusDriver.parser))
+        else:
+            mgr = ExtensionManager(namespace=ENTRYPOINT_GROUP)
+            for ext in mgr.extensions:
+                all_parsers.append((f"{ext.plugin.__name__} Options", ext.plugin.parser))
         
         # Collect usage strings and format help text
         for section_name, parser in all_parsers:
@@ -174,6 +202,15 @@ async def _exec():
                 args = parse_args_options_from_namespace(namespace=cfg_opts, parser=conf_parser)
                 args.driver = sorted(set(available_drivers).intersection(set(cfg_opts.keys())))
 
+    # Check for --ebpf flag first (doesn't require driver)
+    if args.ebpf:
+        bpf_file = BASE_PATH.joinpath("s3slower.c")
+        if not bpf_file.exists():
+            raise FileNotFoundError(f"BPF program not found: {bpf_file}")
+        with bpf_file.open() as f:
+            print(f.read())
+        return 0
+
     # Validate arguments
     try:
         validate_args(cfg_opts)
@@ -197,7 +234,6 @@ async def _exec():
         ("interval", args.interval),
         ("pid", args.pid),
         ("min-latency-ms", args.min_latency_ms),
-        ("ebpf", args.ebpf),
         ("config", args.cfg),
     ]
     
@@ -214,29 +250,49 @@ async def _exec():
     debug = args.debug
     if debug:
         logging.basicConfig(level=logging.DEBUG)
-    
-    if args.ebpf:
-        with bpf_file.open() as f:
-            print(f.read())
-        exit()
 
     # Initialize S3 stats collector
     collector = S3StatsCollector(args)
     
     # Initialize drivers
-    mgr = NamedExtensionManager(
-        namespace=ENTRYPOINT_GROUP,
-        invoke_on_load=True,
-        names=drivers,
-        invoke_kwds=dict(common_args=args)
-    )
+    if available_drivers == ["screen", "prometheus"]:
+        # Development mode - use mock manager
+        class MockDriverManager:
+            def __init__(self, drivers, args):
+                self.extensions = []
+                driver_map = {"screen": ScreenDriver, "prometheus": PrometheusDriver}
+                for driver_name in drivers:
+                    if driver_name in driver_map:
+                        driver_obj = driver_map[driver_name](common_args=args)
+                        ext = type('MockExt', (), {'name': driver_name, 'obj': driver_obj})()
+                        self.extensions.append(ext)
+            
+            def map(self, func):
+                return [func(ext) for ext in self.extensions]
+            
+            def map_method(self, method_name, *args, **kwargs):
+                results = []
+                for ext in self.extensions:
+                    method = getattr(ext.obj, method_name)
+                    results.append(method(*args, **kwargs))
+                return results
+        
+        from s3slower.drivers import ScreenDriver, PrometheusDriver
+        mgr = MockDriverManager(drivers, args)
+    else:
+        mgr = NamedExtensionManager(
+            namespace=ENTRYPOINT_GROUP,
+            invoke_on_load=True,
+            names=drivers,
+            invoke_kwds=dict(common_args=args)
+        )
 
     def on_exit(sig=None, frame=None):
         """Teardown drivers gracefully on exit"""
         logger.info("Exiting...")
         stop_event.set()
 
-    set_signal_handler(on_exit, asyncio.get_event_loop())
+    set_signal_handler(on_exit, asyncio.get_running_loop())
 
     # Setup drivers
     if cfg_opts:
@@ -259,11 +315,11 @@ async def _exec():
         try:
             collector.attach()
             collector.start()
+            logger.info("All good! S3Slower has been attached and is monitoring S3 operations.")
         except Exception as e:
             logger.error(f"Failed to attach S3 monitoring: {e}")
+            exit_error = e
             on_exit()
-            
-        logger.info("All good! S3Slower has been attached and is monitoring S3 operations.")
 
     # Main collection loop
     while not stop_event.is_set():
@@ -288,11 +344,11 @@ async def _exec():
 
 def main():
     """Main entry point"""
-    loop = asyncio.get_event_loop()
     try:
-        return loop.run_until_complete(_exec())
-    finally:
-        loop.close()
+        return asyncio.run(_exec())
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        return 0
 
 
 if __name__ == "__main__":

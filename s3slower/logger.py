@@ -9,8 +9,8 @@ class COLORS:
     """ANSI color codes for terminal output"""
     reset = "\033[0m"
     red = "\033[31m"
-    green = "\033[32m"
-    yellow = "\033[33m"
+    green_code = "\033[32m"
+    yellow_code = "\033[33m"
     blue = "\033[34m"
     magenta = "\033[35m"
     cyan = "\033[36m"
@@ -28,6 +28,14 @@ class COLORS:
     @staticmethod
     def intense_green(text):
         return f"\033[92m{text}\033[0m"
+    
+    @staticmethod
+    def green(text):
+        return f"\033[32m{text}\033[0m"
+    
+    @staticmethod
+    def yellow(text):
+        return f"\033[33m{text}\033[0m"
 
 
 def get_logger(name, color=COLORS.white):
