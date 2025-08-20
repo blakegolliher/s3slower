@@ -26,8 +26,8 @@ def main():
             bpf_text = f.read()
         
         # Replace configuration
-        bpf_text = bpf_text.replace("TARGET_PID", "0")
-        bpf_text = bpf_text.replace("MIN_LATENCY_US", "0")
+        bpf_text = bpf_text.replace("TARGET_PID_PLACEHOLDER", "0")
+        bpf_text = bpf_text.replace("MIN_LATENCY_PLACEHOLDER", "0")
         
         logger.info("Compiling enhanced BPF program...")
         b = BPF(text=bpf_text)

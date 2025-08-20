@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test the kernel-compatible enhanced BPF program
+Test the focused enhanced BPF program - simpler version without extra syscalls
 """
 
 import os
@@ -70,11 +70,11 @@ def print_event(cpu, data, size):
     print('='*80)
 
 def main():
-    print("Kernel-Compatible Enhanced S3 Latency Monitor Test")
+    print("Enhanced S3 Latency Monitor (Focused Version)")
     print("=" * 50)
     
     # Load the BPF program
-    bpf_file = os.path.join(os.path.dirname(__file__), "s3slower_enhanced_kernel_compat.c")
+    bpf_file = os.path.join(os.path.dirname(__file__), "s3slower_enhanced_focused.c")
     
     try:
         logger.info(f"Loading BPF program from {bpf_file}")
@@ -88,22 +88,13 @@ def main():
         logger.info("Compiling BPF program...")
         b = BPF(text=bpf_text)
         
-        logger.info("Attaching probes...")
-        # Attach kprobes for write operations
-        b.attach_kprobe(event="sys_write", fn_name="trace_write")
-        b.attach_kprobe(event="sys_send", fn_name="trace_send")
-        b.attach_kprobe(event="sys_sendto", fn_name="trace_sendto")
-        b.attach_kprobe(event="sys_sendmsg", fn_name="trace_sendmsg")
+        logger.info("✓ BPF program compiled successfully!")
         
-        # Attach kprobes for read operations
+        logger.info("Attaching probes...")
+        # Attach only the basic syscalls
+        b.attach_kprobe(event="sys_write", fn_name="trace_write")
         b.attach_kprobe(event="sys_read", fn_name="trace_read")
         b.attach_kretprobe(event="sys_read", fn_name="trace_read_ret")
-        b.attach_kprobe(event="sys_recv", fn_name="trace_recv")
-        b.attach_kretprobe(event="sys_recv", fn_name="trace_recv_ret")
-        b.attach_kprobe(event="sys_recvfrom", fn_name="trace_recvfrom")
-        b.attach_kretprobe(event="sys_recvfrom", fn_name="trace_recvfrom_ret")
-        b.attach_kprobe(event="sys_recvmsg", fn_name="trace_recvmsg")
-        b.attach_kretprobe(event="sys_recvmsg", fn_name="trace_recvmsg_ret")
         
         logger.info("✓ Successfully attached all probes!")
         
@@ -111,7 +102,13 @@ def main():
         b["events"].open_perf_buffer(print_event)
         
         print("\nMonitoring S3 traffic... Press Ctrl+C to stop")
-        print("Run your elbencho test in another terminal:")
+        print("\nEnhanced Features:")
+        print("- 256-byte buffer (vs 64 in original)")
+        print("- Better HTTP method detection")
+        print("- S3-specific pattern detection")
+        print("- Special handling for elbencho clients")
+        print("- Detects 'warp-benchmark' bucket name")
+        print("\nRun your elbencho test in another terminal:")
         print("elbencho --s3endpoints http://172.200.201.1:80 --s3key supercools3accesskey \\")
         print("         --s3secret SuperCoolS3SecretAccessKeyItReallyIsCool -w -t 4 -n 5 \\")
         print("         -N 5 -s 1g -b 10m warp-benchmark-bucket --timelimit 0")
@@ -129,6 +126,8 @@ def main():
         
     except Exception as e:
         logger.error(f"Failed to load BPF program: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
     
     return 0

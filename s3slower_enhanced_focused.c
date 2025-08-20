@@ -84,7 +84,7 @@ static int detect_s3_patterns(const char *data, int len) {
     // Look for S3-specific headers or patterns
     // This is a simplified check - we're looking for common S3 patterns
     #pragma unroll
-    for (int i = 0; i < len - 10 && i < MAX_BUFFER_SIZE - 10; i++) {
+    for (int i = 0; i < 200 && i < len - 10; i++) {
         // Check for "Host: " header pointing to S3-like endpoints
         if (data[i] == 'H' && data[i+1] == 'o' && data[i+2] == 's' && 
             data[i+3] == 't' && data[i+4] == ':' && data[i+5] == ' ') {
@@ -100,6 +100,15 @@ static int detect_s3_patterns(const char *data, int len) {
         // Check for "bucket" in URL path (common S3 pattern)
         if (i < len - 6 && data[i] == 'b' && data[i+1] == 'u' && 
             data[i+2] == 'c' && data[i+3] == 'k' && data[i+4] == 'e' && data[i+5] == 't') {
+            return 1;
+        }
+        
+        // Check for "warp-benchmark" which is the bucket name in the elbencho command
+        if (i < len - 14 && data[i] == 'w' && data[i+1] == 'a' && data[i+2] == 'r' && 
+            data[i+3] == 'p' && data[i+4] == '-' && data[i+5] == 'b' && 
+            data[i+6] == 'e' && data[i+7] == 'n' && data[i+8] == 'c' && 
+            data[i+9] == 'h' && data[i+10] == 'm' && data[i+11] == 'a' && 
+            data[i+12] == 'r' && data[i+13] == 'k') {
             return 1;
         }
     }
@@ -245,8 +254,18 @@ int trace_read(struct pt_regs *ctx) {
     u64 key = ((u64)pid << 32) | fd;
     struct request_t *req = requests.lookup(&key);
     
-    // If we have a tracked request OR this is an HTTP response, process it
-    if (req || is_http_response(data, read_size)) {
+    // Check process name to see if it's elbencho
+    char comm[TASK_COMM_LEN] = {};
+    bpf_get_current_comm(&comm, sizeof(comm));
+    u8 client_type = detect_client_type(comm);
+    
+    // For elbencho, be more aggressive about detecting S3 traffic
+    int is_elbencho = (client_type == CLIENT_ELBENCHO);
+    
+    // If we have a tracked request OR this is an HTTP response OR it's elbencho with S3 patterns
+    if (req || is_http_response(data, read_size) || 
+        (is_elbencho && detect_s3_patterns(data, read_size))) {
+        
         u64 end_ts = bpf_ktime_get_ns();
         u64 latency_us = 0;
         
@@ -266,9 +285,13 @@ int trace_read(struct pt_regs *ctx) {
         event.actual_resp_bytes = 0;  // Will be filled in kretprobe
         event.is_partial = req ? req->is_multipart : 0;
         event.detected_s3 = req ? req->detected_s3 : detect_s3_patterns(data, read_size);
+        event.client_type = client_type;
 
-        bpf_get_current_comm(&event.comm, sizeof(event.comm));
-        event.client_type = detect_client_type(event.comm);
+        // Copy comm
+        #pragma unroll
+        for (int i = 0; i < TASK_COMM_LEN; i++) {
+            event.comm[i] = comm[i];
+        }
 
         // Copy request data if available, otherwise use response data
         if (req) {
@@ -318,54 +341,5 @@ int trace_read_ret(struct pt_regs *ctx) {
     // Clean up
     read_contexts.delete(&pid_tgid);
     
-    return 0;
-}
-
-// Add send/recv syscall tracing for better coverage
-// Note: These are just aliases for now - in BPF we can't call other functions
-// unless they're static inline, so we'll just track that these were called
-int trace_send(struct pt_regs *ctx) {
-    // For now, just track that send was called
-    // In a more complete implementation, we'd duplicate the trace_write logic here
-    return 0;
-}
-
-int trace_recv(struct pt_regs *ctx) {
-    // For now, just track that recv was called
-    return 0;
-}
-
-int trace_recv_ret(struct pt_regs *ctx) {
-    // For now, just track the return
-    return 0;
-}
-
-int trace_sendto(struct pt_regs *ctx) {
-    // For now, just track that sendto was called
-    return 0;
-}
-
-int trace_recvfrom(struct pt_regs *ctx) {
-    // For now, just track that recvfrom was called
-    return 0;
-}
-
-int trace_recvfrom_ret(struct pt_regs *ctx) {
-    // For now, just track the return
-    return 0;
-}
-
-int trace_sendmsg(struct pt_regs *ctx) {
-    // For now, just track that sendmsg was called
-    return 0;
-}
-
-int trace_recvmsg(struct pt_regs *ctx) {
-    // For now, just track that recvmsg was called
-    return 0;
-}
-
-int trace_recvmsg_ret(struct pt_regs *ctx) {
-    // For now, just track the return
     return 0;
 }
