@@ -161,6 +161,14 @@ class S3StatsCollector:
             except Exception as e:
                 logger.debug(f"✗ Failed to attach to {syscall}: {e}")
         
+        # NEW: Attach to tcp_sendmsg for elbencho/AWS SDK support
+        try:
+            self.b.attach_kprobe(event="tcp_sendmsg", fn_name="trace_tcp_sendmsg")
+            attached_probes.append("kprobe:tcp_sendmsg")
+            logger.info("✓ Attached to tcp_sendmsg for AWS SDK/elbencho support")
+        except Exception as e:
+            logger.warning(f"Could not attach to tcp_sendmsg - elbencho traffic may not be captured: {e}")
+        
         if not attached_probes:
             raise RuntimeError("Failed to attach to any syscalls")
         

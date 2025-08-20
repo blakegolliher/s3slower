@@ -1,6 +1,7 @@
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/socket.h>
+#include <net/sock.h>
 
 // Configuration - will be replaced by Python
 #define TARGET_PID 0
@@ -225,4 +226,27 @@ int trace_read_ret(struct pt_regs *ctx) {
     read_contexts.delete(&pid_tgid);
     
     return 0;
+}
+
+// NEW: Support for tcp_sendmsg (used by elbencho/AWS SDK)
+int trace_tcp_sendmsg(struct pt_regs *ctx, struct sock *sk, struct msghdr *msg, size_t size) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    
+    // PID filtering
+    if (TARGET_PID != 0 && pid != TARGET_PID) return 0;
+    
+    // Skip small messages
+    if (size < 20) return 0;
+    
+    // Get process name to check if it's a known S3 client
+    char comm[TASK_COMM_LEN] = {};
+    bpf_get_current_comm(&comm, sizeof(comm));
+    u8 client_type = detect_client_type(comm);
+    
+    // Only process known clients
+    if (client_type == CLIENT_UNKNOWN) return 0;
+    
+    // Process as if it was a write syscall with fd=-1 to indicate tcp_sendmsg
+    return handle_write(ctx, pid_tgid, -1, NULL, size, client_type);
 } 
