@@ -134,10 +134,39 @@ def main():
         b = BPF(text=bpf_text)
         
         logger.info("Attaching probes...")
-        # Attach kprobes
-        b.attach_kprobe(event="sys_write", fn_name="trace_write")
-        b.attach_kprobe(event="sys_read", fn_name="trace_read")
-        b.attach_kretprobe(event="sys_read", fn_name="trace_read_ret")
+        
+        # Try to attach to write syscalls (try multiple names for compatibility)
+        write_attached = False
+        write_syscalls = ["ksys_write", "__x64_sys_write", "sys_write"]
+        for syscall in write_syscalls:
+            try:
+                b.attach_kprobe(event=syscall, fn_name="trace_write")
+                logger.info(f"✓ Attached to {syscall}")
+                write_attached = True
+                break
+            except:
+                pass
+        
+        if not write_attached:
+            logger.error("Failed to attach to any write syscall")
+            return 1
+        
+        # Try to attach to read syscalls
+        read_attached = False
+        read_syscalls = ["ksys_read", "__x64_sys_read", "sys_read"]
+        for syscall in read_syscalls:
+            try:
+                b.attach_kprobe(event=syscall, fn_name="trace_read")
+                b.attach_kretprobe(event=syscall, fn_name="trace_read_ret")
+                logger.info(f"✓ Attached to {syscall}")
+                read_attached = True
+                break
+            except:
+                pass
+        
+        if not read_attached:
+            logger.error("Failed to attach to any read syscall")
+            return 1
         
         logger.info("✓ Successfully attached all probes!")
         
