@@ -122,6 +122,9 @@ int trace_write(struct pt_regs *ctx) {
     const char __user *buf = (const char *)ctx->si;
     size_t count = (size_t)ctx->dx;
 
+    // Skip stdout (1) and stderr (2) to avoid debug output loops
+    if (fd <= 2) return 0;
+    
     if (count < 4) return 0;  // Too small to be HTTP
 
     char data[64] = {};
@@ -229,6 +232,9 @@ int trace_read(struct pt_regs *ctx) {
     void __user *buf = (void *)ctx->si;
     size_t count = (size_t)ctx->dx;
 
+    // Skip stdout (1) and stderr (2) to avoid debug output loops
+    if (fd <= 2) return 0;
+    
     if (count < 4) return 0;
 
     char data[64] = {};
