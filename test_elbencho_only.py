@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Debug version to understand why elbencho isn't being detected
+Debug version focused ONLY on elbencho traffic
 """
 
 import os
@@ -13,7 +13,7 @@ import ctypes as ct
 # Setup logging
 logging.basicConfig(level=logging.INFO,
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('s3slower_debug')
+logger = logging.getLogger('elbencho_debug')
 
 # Define the debug event structure
 class DebugEvent(ct.Structure):
@@ -50,58 +50,42 @@ def print_debug_event(cpu, data, size):
     """Debug event handler"""
     event = ct.cast(data, ct.POINTER(DebugEvent)).contents
     
+    # Only show elbencho events
+    if event.client_type != 2:  # CLIENT_ELBENCHO = 2
+        return
+    
     # Decode event type
     event_types = {
-        1: "WRITE_SEEN",
-        2: "HTTP_REQUEST",
-        3: "READ_SEEN",
-        4: "HTTP_RESPONSE"
+        1: "WRITE",
+        2: "HTTP_REQ",
+        3: "READ",
+        4: "HTTP_RESP"
     }
     event_type = event_types.get(event.event_type, "UNKNOWN")
     
-    # Decode client type
-    client_types = {
-        0: "UNKNOWN",
-        1: "WARP",
-        2: "ELBENCHO",
-        3: "BOTO3",
-        4: "S3CMD",
-        5: "AWSCLI"
-    }
-    client = client_types.get(event.client_type, "UNKNOWN")
+    # Show first 30 bytes as hex and ASCII
+    hex_str = ' '.join(f'{b:02x}' for b in event.data[:30])
     
-    # Extract data - show as hex if not printable
-    try:
-        # Try to decode as text first
-        text = event.data.decode('utf-8', errors='strict')[:50]
-        # Check if it looks like HTTP
-        if text.startswith(('GET ', 'PUT ', 'POST ', 'HEAD ', 'DELETE ', 'HTTP/')):
-            data_str = text.replace('\n', '\\n').replace('\r', '\\r')
+    # Try to show ASCII for printable chars
+    ascii_str = ''
+    for b in event.data[:30]:
+        if 32 <= b <= 126:  # Printable ASCII
+            ascii_str += chr(b)
         else:
-            # Show first 20 bytes as hex
-            hex_str = ' '.join(f'{b:02x}' for b in event.data[:20])
-            data_str = f"HEX: {hex_str}"
-    except:
-        # If decode fails, show as hex
-        hex_str = ' '.join(f'{b:02x}' for b in event.data[:20])
-        data_str = f"HEX: {hex_str}"
+            ascii_str += '.'
     
-    print(f"[DEBUG] {event_type:14} | {client:8} | PID: {event.pid:6} | FD: {event.fd:3} | Size: {event.size:6} | Data: {data_str}")
+    print(f"[{event_type:9}] PID: {event.pid:6} TID: {event.tid:6} FD: {event.fd:3} Size: {event.size:6}")
+    print(f"           HEX: {hex_str}")
+    print(f"           ASCII: {ascii_str}")
+    print()
 
 def print_event(cpu, data, size):
     """Event handler"""
     event = ct.cast(data, ct.POINTER(Event)).contents
     
-    # Decode client type
-    client_types = {
-        0: "UNKNOWN",
-        1: "WARP",
-        2: "ELBENCHO",
-        3: "BOTO3",
-        4: "S3CMD",
-        5: "AWSCLI"
-    }
-    client = client_types.get(event.client_type, "UNKNOWN")
+    # Only show elbencho events
+    if event.client_type != 2:  # CLIENT_ELBENCHO = 2
+        return
     
     # Extract request info
     try:
@@ -112,18 +96,17 @@ def print_event(cpu, data, size):
     
     # Print detailed info
     print(f"\n{'='*80}")
-    print(f"[S3 REQUEST COMPLETE]")
-    print(f"Client: {client} | Process: {event.comm.decode('utf-8', errors='replace')} (PID: {event.pid})")
+    print(f"[ELBENCHO S3 REQUEST COMPLETE]")
+    print(f"Process: {event.comm.decode('utf-8', errors='replace')} (PID: {event.pid})")
     print(f"Latency: {event.latency_us} us | FD: {event.fd}")
     print(f"Request Size: {event.req_size} bytes | Response Size: {event.resp_size} bytes")
     print(f"Request: {req_line}")
     print('='*80)
 
 def main():
-    print("S3 Latency Monitor - Debug Mode")
+    print("Elbencho-Only Debug Monitor")
     print("=" * 50)
-    print("This will show ALL write/read activity from known S3 clients")
-    print("(warp, elbencho, boto3/python, s3cmd, aws cli)")
+    print("This will show ONLY elbencho write/read activity")
     print("")
     
     # Load the BPF program
@@ -143,7 +126,7 @@ def main():
         
         logger.info("Attaching probes...")
         
-        # Try to attach to write syscalls (try multiple names for compatibility)
+        # Try to attach to write syscalls
         write_attached = False
         write_syscalls = ["ksys_write", "__x64_sys_write", "sys_write"]
         for syscall in write_syscalls:
@@ -182,20 +165,18 @@ def main():
         b["debug_events"].open_perf_buffer(print_debug_event)
         b["events"].open_perf_buffer(print_event)
         
-        print("\nMonitoring S3 traffic... Press Ctrl+C to stop")
-        print("\nDEBUG OUTPUT FORMAT:")
-        print("[DEBUG] EVENT_TYPE      | CLIENT   | PID: xxxxxx | FD: xxx | Size: xxxxxx | Data: <first 50 bytes>")
-        print("")
-        print("Run your tests:")
-        print("1. elbencho: elbencho --s3endpoints http://172.200.201.1:80 ... warp-benchmark-bucket")
-        print("2. boto3: python3 -c \"import boto3; s3=boto3.client('s3', endpoint_url='http://172.200.201.1:80'); s3.list_buckets()\"")
+        print("\nMonitoring elbencho traffic... Press Ctrl+C to stop")
+        print("\nRun elbencho in another terminal:")
+        print("elbencho --s3endpoints http://172.200.201.1:80 --s3key supercools3accesskey \\")
+        print("         --s3secret SuperCoolS3SecretAccessKeyItReallyIsCool -w -t 4 -n 5 \\")
+        print("         -N 5 -s 1g -b 10m warp-benchmark-bucket --timelimit 0")
         print("")
         
         # Poll for events
         while True:
             try:
                 b.perf_buffer_poll()
-                time.sleep(0.01)  # Faster polling for debug
+                time.sleep(0.01)
             except KeyboardInterrupt:
                 break
         
