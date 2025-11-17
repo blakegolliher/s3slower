@@ -1,0 +1,6 @@
+# Core dependency - BCC for eBPF
+# Note: BCC is typically installed via system package manager, not pip
+# This file lists optional Python dependencies
+
+# Optional: For Prometheus metrics export
+prometheus-client>=0.15.0
