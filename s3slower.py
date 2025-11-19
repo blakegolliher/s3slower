@@ -61,11 +61,18 @@ enum http_op_t {
 struct conn_key_t {
     u32 pid;
     u64 id;  // generic connection identifier: SSL* / gnutls_session_t / PRFileDesc*
+    u64 seq; // sequence number to handle multiple requests on same connection
+};
+
+struct conn_id_t {
+    u32 pid;
+    u64 id;
 };
 
 struct req_val_t {
     u64 start_ns;
     u32 op;
+    u8 responded;  // flag to track if we've already captured a response
     char hdr[MAX_HDR];   // request header preview
 };
 
@@ -87,22 +94,78 @@ struct read_args_t {
 
 BPF_HASH(active_reqs, struct conn_key_t, struct req_val_t);
 BPF_HASH(read_args, u32, struct read_args_t);
+BPF_HASH(conn_seqs, struct conn_id_t, u64);  // track sequence numbers per connection
 BPF_PERCPU_ARRAY(tmp_evt, struct event_t, 1);
 BPF_PERF_OUTPUT(events);
 
-static inline u32 classify_method(char *buf)
+static inline u32 classify_method(char *buf, int len)
 {
-    if (buf[0] == 'G' && buf[1] == 'E' && buf[2] == 'T' && buf[3] == ' ')
-        return OP_GET;
-    if (buf[0] == 'P' && buf[1] == 'U' && buf[2] == 'T' && buf[3] == ' ')
-        return OP_PUT;
-    if (buf[0] == 'H' && buf[1] == 'E' && buf[2] == 'A' && buf[3] == 'D' && buf[4] == ' ')
-        return OP_HEAD;
-    if (buf[0] == 'P' && buf[1] == 'O' && buf[2] == 'S' && buf[3] == 'T' && buf[4] == ' ')
-        return OP_POST;
-    if (buf[0] == 'D' && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'E' && buf[4] == 'T' && buf[5] == 'E' && buf[6] == ' ')
-        return OP_DELETE;
+    // Search for HTTP method within first 40 bytes to handle offset/partial data
+    // Reduced from 64 to help BPF verifier prove bounds safety
+    int search_len = len < 40 ? len : 40;
+
+    #pragma unroll 32
+    for (int i = 0; i < 32 && i < search_len - 7; i++) {
+        // Check for GET followed by space
+        if (buf[i] == 'G' && buf[i+1] == 'E' && buf[i+2] == 'T' && buf[i+3] == ' ')
+            return OP_GET;
+        // Check for PUT followed by space
+        if (buf[i] == 'P' && buf[i+1] == 'U' && buf[i+2] == 'T' && buf[i+3] == ' ')
+            return OP_PUT;
+        // Check for POST
+        if (buf[i] == 'P' && buf[i+1] == 'O' && buf[i+2] == 'S' && buf[i+3] == 'T' && buf[i+4] == ' ')
+            return OP_POST;
+        // Check for HEAD
+        if (buf[i] == 'H' && buf[i+1] == 'E' && buf[i+2] == 'A' && buf[i+3] == 'D' && buf[i+4] == ' ')
+            return OP_HEAD;
+        // Check for DELETE
+        if (buf[i] == 'D' && buf[i+1] == 'E' && buf[i+2] == 'L' && buf[i+3] == 'E' &&
+            buf[i+4] == 'T' && buf[i+5] == 'E' && buf[i+6] == ' ')
+            return OP_DELETE;
+    }
     return OP_UNKNOWN;
+}
+
+// Helper: check if buffer starts with "HTTP/" (validate response format)
+static inline int is_http_response(char *buf, int len)
+{
+    if (len < 5)
+        return 0;
+    if (buf[0] == 'H' && buf[1] == 'T' && buf[2] == 'T' && buf[3] == 'P' && buf[4] == '/')
+        return 1;
+    return 0;
+}
+
+// Helper: extract status code from HTTP response (returns 0 if invalid)
+static inline int extract_status_code(char *buf, int len)
+{
+    // Look for "HTTP/1.x XXX" pattern
+    // Example: "HTTP/1.1 200 OK\r\n"
+    if (len < 13 || !is_http_response(buf, len))
+        return 0;
+
+    // Find first space after HTTP/1.x
+    int space_pos = -1;
+    for (int i = 8; i < 12 && i < len; i++) {
+        if (buf[i] == ' ') {
+            space_pos = i;
+            break;
+        }
+    }
+
+    if (space_pos < 0 || space_pos + 3 >= len)
+        return 0;
+
+    // Parse 3-digit status code
+    int code = 0;
+    for (int i = 0; i < 3; i++) {
+        char c = buf[space_pos + 1 + i];
+        if (c < '0' || c > '9')
+            return 0;
+        code = code * 10 + (c - '0');
+    }
+
+    return code;
 }
 
 // Entry for all TLS write functions (OpenSSL SSL_write, gnutls_record_send, NSS PR_Write/PR_Send)
@@ -117,20 +180,39 @@ int ssl_write_enter(struct pt_regs *ctx)
     if (len <= 0)
         return 0;
 
+    // Store request with unique key (pid, id, seq)
     struct conn_key_t key = {};
     key.pid = pid;
     key.id  = id;
 
     struct req_val_t val = {};
     val.start_ns = bpf_ktime_get_ns();
+    val.responded = 0;
 
+    // Read buffer directly into val.hdr
     int copy = len;
     if (copy > MAX_HDR)
         copy = MAX_HDR;
-
     bpf_probe_read_user(&val.hdr, copy, buf);
-    val.op = classify_method(val.hdr);
 
+    // Classify method - if UNKNOWN, this might be body data or non-HTTP, skip it
+    val.op = classify_method(val.hdr, copy);
+    if (val.op == OP_UNKNOWN)
+        return 0;  // Skip non-HTTP writes (body data, TLS handshake, etc.)
+
+    // Get or create sequence number for this connection
+    struct conn_id_t conn = {};
+    conn.pid = pid;
+    conn.id = id;
+
+    u64 *seq_ptr = conn_seqs.lookup(&conn);
+    u64 seq = 0;
+    if (seq_ptr) {
+        seq = (*seq_ptr) + 1;
+    }
+    conn_seqs.update(&conn, &seq);
+
+    key.seq = seq;
     active_reqs.update(&key, &val);
     return 0;
 }
@@ -169,27 +251,86 @@ int ssl_read_exit(struct pt_regs *ctx)
         return 0;
     }
 
+    // Use the per-CPU event buffer to store response temporarily
+    int zero = 0;
+    struct event_t *evt = tmp_evt.lookup(&zero);
+    if (!evt) {
+        read_args.delete(&tid);
+        return 0;
+    }
+
+    // Read response buffer into event struct (will reuse for final event if needed)
+    int rcopy = ret;
+    if (rcopy > MAX_HDR)
+        rcopy = MAX_HDR;
+    bpf_probe_read_user(&evt->resp_hdr, rcopy, ap->buf);
+
+    // Validate this is an HTTP response
+    if (!is_http_response(evt->resp_hdr, rcopy)) {
+        // Not HTTP response - might be body data or other traffic
+        read_args.delete(&tid);
+        return 0;
+    }
+
+    // Extract status code to check for 1xx intermediate responses
+    int status_code = extract_status_code(evt->resp_hdr, rcopy);
+
+    // Get connection info to find matching request
+    struct conn_id_t conn = {};
+    conn.pid = pid;
+    conn.id = ap->id;
+
+    // Get current sequence number for this connection
+    u64 *seq_ptr = conn_seqs.lookup(&conn);
+    if (!seq_ptr) {
+        read_args.delete(&tid);
+        return 0;
+    }
+
+    // Try to find matching request by checking current and recent sequence numbers
+    // Start from current seq and work backwards (in case of response ordering issues)
+    struct req_val_t *vp = NULL;
     struct conn_key_t key = {};
     key.pid = pid;
-    key.id  = ap->id;
+    key.id = ap->id;
 
-    struct req_val_t *vp = active_reqs.lookup(&key);
+    // Check last 10 sequence numbers (handles minor reordering)
+    u64 current_seq = *seq_ptr;
+    #pragma unroll
+    for (int i = 0; i < 10; i++) {
+        if (current_seq < i)
+            break;
+        key.seq = current_seq - i;
+        vp = active_reqs.lookup(&key);
+        if (vp && !vp->responded) {
+            // Found unresp onded request
+            break;
+        }
+        vp = NULL;
+    }
+
     if (!vp) {
         read_args.delete(&tid);
         return 0;
     }
 
-    int zero = 0;
-    struct event_t *evt = tmp_evt.lookup(&zero);
-    if (!evt) {
-        // should not happen, but be safe
-        active_reqs.delete(&key);
+    // Check if already responded (shouldn't happen due to check above, but be safe)
+    if (vp->responded) {
         read_args.delete(&tid);
         return 0;
     }
 
-    __builtin_memset(evt, 0, sizeof(*evt));
+    // If this is a 1xx response (e.g. 100 Continue), mark as responded but don't emit event
+    // Keep the request active for the final 2xx/3xx/4xx/5xx response
+    if (status_code >= 100 && status_code < 200) {
+        vp->responded = 1;  // Mark that we've seen a response, but keep entry
+        read_args.delete(&tid);
+        // Don't delete from active_reqs - wait for final response
+        return 0;
+    }
 
+    // This is a final response (2xx, 3xx, 4xx, 5xx) - emit event
+    // evt already has resp_hdr filled from earlier
     evt->ts    = bpf_ktime_get_ns();
     evt->delta = evt->ts - vp->start_ns;
     evt->pid   = pid;
@@ -198,14 +339,11 @@ int ssl_read_exit(struct pt_regs *ctx)
     bpf_get_current_comm(&evt->comm, sizeof(evt->comm));
 
     __builtin_memcpy(&evt->req_hdr, &vp->hdr, sizeof(evt->req_hdr));
-
-    int rcopy = ret;
-    if (rcopy > MAX_HDR)
-        rcopy = MAX_HDR;
-    bpf_probe_read_user(&evt->resp_hdr, rcopy, ap->buf);
+    // resp_hdr already filled above
 
     events.perf_submit(ctx, evt, sizeof(*evt));
 
+    // Delete request after final response
     active_reqs.delete(&key);
     read_args.delete(&tid);
     return 0;

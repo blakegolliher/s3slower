@@ -64,6 +64,23 @@ venv.bak/
 *.pid
 *.lock
 package-lock.json
+
+# Test files and outputs (could contain sensitive data)
+test_logs/
+*_logs/
 test_*.py
 verify_*.py
+validate_*.py
+run_s3_tests.py
+quick_test.py
 demo_*.sh
+*.backup
+README_TESTING.md
+
+# Config files (could contain credentials)
+*_config.py
+s3_test_config.py
+
+# Binaries and dependencies
+mc
+vasts3/
