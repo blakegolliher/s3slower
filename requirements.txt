@@ -4,3 +4,5 @@
 
 # Optional: For Prometheus metrics export
 prometheus-client>=0.15.0
+# Optional: For YAML config parsing
+PyYAML>=6.0

@@ -1,0 +1,45 @@
+Goal: add Prometheus scraping + config-driven logging/rotation + packaging.
+
+Context recap (current state):
+- s3slower.py traces TLS (OpenSSL/GnuTLS/NSS) and plain HTTP via kprobes; prints per-event lines and summary; optional Prometheus via --prometheus-port.
+- No Go/mc-specific code (rolled back). Focus on universal TLS/HTTP.
+- Tests/logging today: TSV via --log-file; scripts/s3slower_correlate.py exists.
+
+Next phase requirements:
+1) Prometheus endpoint
+   - Expose current metrics (counts/latencies/sizes/status) via HTTP so Prometheus can scrape.
+   - Make it configurable (interface + port from config file).
+   - Keep CLI usable; config should override defaults, CLI flags override config? Decide and implement clearly.
+2) Config file
+   - Location: decide (e.g., /etc/s3slower/config.yaml). User said: “in this config file in /opt/s3slower/s3slower.log we can log all the transactions we saw in full text.” Interpretation: config points to log file path /opt/s3slower/s3slower.log.
+   - Must configure:
+     * log path (default /opt/s3slower/s3slower.log), max_size_mb, max_backups (rotation).
+     * metrics refresh interval (how often to aggregate/publish).
+     * Prometheus listener (interface/bind_host + port).
+   - Choose a simple format (YAML or TOML); document defaults. Handle missing file gracefully.
+   - Implement log rotation (size-based with backups) for the full-text transaction log.
+3) Prometheus metrics
+   - Ensure all existing data is exported: per-op counts, latency histograms or summaries, sizes, status codes, bucket/endpoint labels. Reuse existing update_prometheus helpers or refactor if needed.
+   - Honor refresh interval for aggregation if needed; ensure thread-safe.
+4) Packaging
+   - Provide Red Hat/Fedora (RPM) and Debian/Ubuntu (DEB) packaging scaffolding. Simple Makefile targets using fpm or native tooling is OK. Include service install paths (/usr/bin/s3slower.py?), config in /etc/s3slower/, log dir /opt/s3slower/.
+   - Document build steps.
+5) Logging
+   - Full-text transaction log to /opt/s3slower/s3slower.log by default, with rotation max_size_mb + max_backups from config.
+   - Keep existing --log-file behavior or deprecate? Decide, but ensure backward compatibility or clear migration note.
+6) Inspiration
+   - Look at /home/vastdata/projects/vnfs-collector for organization; reuse patterns if helpful.
+
+Deliverables:
+- Code changes implementing config parsing, Prometheus server config, logging/rotation, metrics refresh.
+- Packaging scripts/Makefile for rpm/deb.
+- Documentation updates (README) explaining config, defaults, how to run service + Prometheus scraping.
+
+Open questions to resolve in-code/comments if not clarified:
+- Exact config format/location.
+- Interaction between CLI flags and config.
+- Metrics type (histogram buckets vs summary) and label cardinality.
+
+Constraints:
+- Do not break existing functionality; Prometheus and logging should be additive.
+- Keep ASCII; minimal necessary comments.

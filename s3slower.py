@@ -23,15 +23,19 @@ from __future__ import annotations
 import argparse
 import ctypes as ct
 import glob
+import logging
 import os
 import select
 import signal
 import sys
 import termios
+import threading
 import time
 import tty
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Tuple
+from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from bcc import BPF
 
@@ -41,6 +45,129 @@ try:
     HAVE_PROM = True
 except ImportError:
     HAVE_PROM = False
+
+try:
+    import yaml  # type: ignore
+except ImportError:
+    yaml = None  # type: ignore
+
+# ---------------------------------------------------------------------------
+# Configuration defaults
+# ---------------------------------------------------------------------------
+
+DEFAULT_CONFIG_PATH = "/etc/s3slower/config.yaml"
+DEFAULT_LOG_PATH = "/opt/s3slower/s3slower.log"
+DEFAULT_LOG_MAX_MB = 100
+DEFAULT_LOG_BACKUPS = 5
+DEFAULT_METRICS_REFRESH_SEC = 5.0
+DEFAULT_PROM_HOST = "0.0.0.0"
+DEFAULT_PROM_PORT = 0
+
+
+@dataclass
+class RuntimeSettings:
+    log_enabled: bool = True
+    log_path: str = DEFAULT_LOG_PATH
+    log_max_size_mb: int = DEFAULT_LOG_MAX_MB
+    log_max_backups: int = DEFAULT_LOG_BACKUPS
+    prometheus_host: str = DEFAULT_PROM_HOST
+    prometheus_port: int = DEFAULT_PROM_PORT
+    metrics_refresh_interval: float = DEFAULT_METRICS_REFRESH_SEC
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_config_file(path: str) -> Dict[str, Any]:
+    """
+    Load YAML config if present; return {} if file is absent.
+    """
+    if not path:
+        return {}
+
+    if not os.path.isfile(path):
+        return {}
+
+    if yaml is None:
+        print(
+            f"Config file found at {path} but PyYAML is not installed. "
+            "Install it with: pip install pyyaml",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception as exc:
+        print(f"ERROR: failed to read config file {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(data, dict):
+        print(f"ERROR: config file {path} must contain a YAML mapping/object", file=sys.stderr)
+        sys.exit(1)
+
+    return data
+
+
+def build_runtime_settings(args: argparse.Namespace, cfg: Dict[str, Any]) -> RuntimeSettings:
+    """
+    Merge defaults -> config -> CLI overrides into a RuntimeSettings object.
+    """
+    settings = RuntimeSettings()
+
+    log_cfg = cfg.get("logging", {}) if isinstance(cfg, dict) else {}
+    if isinstance(log_cfg, dict):
+        settings.log_enabled = bool(log_cfg.get("enabled", settings.log_enabled))
+        settings.log_path = log_cfg.get("path", settings.log_path) or settings.log_path
+        settings.log_max_size_mb = _safe_int(log_cfg.get("max_size_mb"), settings.log_max_size_mb)
+        settings.log_max_backups = _safe_int(log_cfg.get("max_backups"), settings.log_max_backups)
+
+    prom_cfg = cfg.get("prometheus", {}) if isinstance(cfg, dict) else {}
+    if isinstance(prom_cfg, dict):
+        settings.prometheus_host = prom_cfg.get("host", settings.prometheus_host) or settings.prometheus_host
+        settings.prometheus_port = _safe_int(prom_cfg.get("port"), settings.prometheus_port)
+
+    metrics_cfg = cfg.get("metrics", {}) if isinstance(cfg, dict) else {}
+    if isinstance(metrics_cfg, dict):
+        settings.metrics_refresh_interval = _safe_float(
+            metrics_cfg.get("refresh_interval_seconds"),
+            settings.metrics_refresh_interval,
+        )
+
+    # CLI overrides have final say
+    if getattr(args, "log_file", None):
+        settings.log_enabled = True
+        settings.log_path = args.log_file
+    if getattr(args, "no_log_file", False):
+        settings.log_enabled = False
+    if getattr(args, "log_max_size_mb", None) is not None:
+        settings.log_max_size_mb = args.log_max_size_mb
+    if getattr(args, "log_max_backups", None) is not None:
+        settings.log_max_backups = args.log_max_backups
+    if getattr(args, "prometheus_host", None):
+        settings.prometheus_host = args.prometheus_host
+    if getattr(args, "prometheus_port", None) is not None:
+        settings.prometheus_port = args.prometheus_port
+    if getattr(args, "metrics_refresh_interval", None) is not None:
+        settings.metrics_refresh_interval = args.metrics_refresh_interval
+
+    if settings.metrics_refresh_interval <= 0:
+        settings.metrics_refresh_interval = DEFAULT_METRICS_REFRESH_SEC
+
+    return settings
+
 
 # ---------------------------------------------------------------------------
 # BPF program (embedded C)
@@ -801,7 +928,7 @@ REQ_BYTES: Optional[Counter] = None
 RESP_TOTAL: Optional[Counter] = None
 
 
-def init_prometheus(port: int) -> None:
+def init_prometheus(host: str, port: int) -> None:
     global REQ_LATENCY, REQ_TOTAL, REQ_BYTES, RESP_TOTAL
 
     if not HAVE_PROM:
@@ -812,7 +939,7 @@ def init_prometheus(port: int) -> None:
         )
         sys.exit(1)
 
-    start_http_server(port)
+    start_http_server(port, addr=host)
 
     # Label set: bucket, endpoint, method
     REQ_LATENCY = Histogram(
@@ -868,6 +995,89 @@ def update_prometheus(bucket: str, endpoint: str, method: str,
                       endpoint=endpoint_label,
                       method=method_label,
                       status=status_label).inc()
+
+
+# ---------------------------------------------------------------------------
+# Logging + metrics helpers
+# ---------------------------------------------------------------------------
+
+
+class MetricsAggregator:
+    """
+    Collect events and push them to Prometheus on a configurable cadence to reduce
+    per-event overhead while keeping metrics up to date.
+    """
+
+    def __init__(self, refresh_interval: float) -> None:
+        self.refresh_interval = max(refresh_interval, 0.1)
+        self._lock = threading.Lock()
+        self._pending: List[Tuple[str, str, str, float, int, int]] = []
+        self._stop_evt = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="s3slower-prom-flush", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.refresh_interval * 2)
+        self.flush()
+
+    def record(self, bucket: str, endpoint: str, method: str,
+               latency_seconds: float, size_bytes: int, status_code: int) -> None:
+        with self._lock:
+            self._pending.append((bucket, endpoint, method, latency_seconds, size_bytes, status_code))
+
+    def flush(self) -> None:
+        with self._lock:
+            batch = self._pending
+            self._pending = []
+
+        for bucket, endpoint, method, latency_seconds, size_bytes, status_code in batch:
+            update_prometheus(bucket, endpoint, method, latency_seconds, size_bytes, status_code)
+
+    def _run(self) -> None:
+        while not self._stop_evt.wait(self.refresh_interval):
+            self.flush()
+
+
+def setup_transaction_logger(settings: RuntimeSettings) -> Optional[logging.Logger]:
+    if not settings.log_enabled:
+        return None
+
+    if not settings.log_path:
+        return None
+
+    log_path = settings.log_path
+    dirpath = os.path.dirname(os.path.abspath(log_path))
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
+
+    logger = logging.getLogger("s3slower.transactions")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.handlers = []
+
+    max_bytes = max(0, int(settings.log_max_size_mb)) * 1024 * 1024
+    backup_count = max(0, int(settings.log_max_backups))
+
+    if max_bytes > 0:
+        handler: logging.Handler = RotatingFileHandler(
+            log_path,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+    else:
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    return logger
 
 
 # ---------------------------------------------------------------------------
@@ -948,6 +1158,8 @@ def flush_stdin() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="S3 latency tracer using TLS libraries and plain HTTP (s3slower-style)")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
+                        help=f"Path to YAML config file (default: {DEFAULT_CONFIG_PATH})")
     parser.add_argument("--pid", type=int, default=0,
                         help="Trace only this PID (default: all processes)")
     parser.add_argument("--openssl", action="store_true",
@@ -978,21 +1190,25 @@ def main() -> None:
                         help="Include traffic that doesn't parse as HTTP or has "
                              "unknown method (OP=UNK)")
 
-    parser.add_argument("--prometheus-port", type=int, default=0,
-                        help="If >0, expose Prometheus /metrics on this port")
+    parser.add_argument("--prometheus-host", help="Interface/IP for Prometheus /metrics listener")
+    parser.add_argument("--prometheus-port", type=int,
+                        help="Expose Prometheus /metrics on this port (overrides config)")
+    parser.add_argument("--metrics-refresh-interval", type=float,
+                        help="Seconds between Prometheus metric flushes (overrides config)")
     parser.add_argument("--log-file",
-                        help="If set, append raw per-request events as TSV to this file")
+                        help="Append raw per-request events as TSV to this file (overrides config)")
+    parser.add_argument("--log-max-size-mb", type=int,
+                        help="Max log file size in MB before rotation (overrides config)")
+    parser.add_argument("--log-max-backups", type=int,
+                        help="How many rotated log files to keep (overrides config)")
+    parser.add_argument("--no-log-file", action="store_true",
+                        help="Disable transaction file logging even if config enables it")
 
     args = parser.parse_args()
 
-    log_fh = None
-    if args.log_file:
-        try:
-            log_fh = open(args.log_file, "a", buffering=1)
-            print(f"Logging raw events to {args.log_file}")
-        except OSError as e:
-            print(f"ERROR: could not open log file {args.log_file}: {e}", file=sys.stderr)
-            sys.exit(1)
+    if args.no_log_file and args.log_file:
+        print("ERROR: --no-log-file cannot be combined with --log-file", file=sys.stderr)
+        sys.exit(1)
 
     if args.http_only and args.no_http:
         print("ERROR: --http-only and --no-http are mutually exclusive", file=sys.stderr)
@@ -1020,9 +1236,37 @@ def main() -> None:
         args.nss = True
         print("Auto TLS mode: attempting OpenSSL, GnuTLS, and NSS (where present)")
 
-    if args.prometheus_port > 0:
-        init_prometheus(args.prometheus_port)
-        print(f"Prometheus /metrics listening on :{args.prometheus_port}")
+    config_from_file = load_config_file(args.config)
+    if os.path.isfile(args.config):
+        print(f"Loaded config from {args.config}")
+
+    settings = build_runtime_settings(args, config_from_file)
+
+    transaction_logger: Optional[logging.Logger] = None
+    if settings.log_enabled:
+        try:
+            transaction_logger = setup_transaction_logger(settings)
+            if transaction_logger is not None:
+                print(
+                    f"Logging raw events to {settings.log_path} "
+                    f"(max {settings.log_max_size_mb} MB, backups {settings.log_max_backups})"
+                )
+        except OSError as e:
+            print(f"ERROR: could not open log file {settings.log_path}: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        transaction_logger = None
+
+    metrics_sink: Optional[MetricsAggregator] = None
+
+    if settings.prometheus_port > 0:
+        init_prometheus(settings.prometheus_host, settings.prometheus_port)
+        metrics_sink = MetricsAggregator(settings.metrics_refresh_interval)
+        metrics_sink.start()
+        print(
+            f"Prometheus /metrics listening on {settings.prometheus_host}:{settings.prometheus_port} "
+            f"(refresh every {settings.metrics_refresh_interval}s)"
+        )
 
     # Setup terminal to prevent control character interference
     old_terminal_settings = setup_terminal()
@@ -1093,7 +1337,9 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    def handle_event(cpu: int, data: bytes, size: int, log_fh=log_fh) -> None:
+    def handle_event(cpu: int, data: bytes, size: int,
+                     log_logger: Optional[logging.Logger] = transaction_logger,
+                     metrics_aggregator: Optional[MetricsAggregator] = metrics_sink) -> None:
         evt = ct.cast(data, ct.POINTER(Event)).contents
 
         # Users may request pid filtering; enforce it here for both TLS and HTTP events.
@@ -1148,7 +1394,10 @@ def main() -> None:
         stats["ALL"].append(lat_ms)
 
     # Update Prometheus (latency, size, response code)
-        update_prometheus(bucket, endpoint, method_bucket, lat_ms / 1000.0, content_length, status_code)
+        if metrics_aggregator is not None:
+            metrics_aggregator.record(bucket, endpoint, method_bucket, lat_ms / 1000.0, content_length, status_code)
+        else:
+            update_prometheus(bucket, endpoint, method_bucket, lat_ms / 1000.0, content_length, status_code)
 
     # Per-event line
         tstr = time.strftime("%H:%M:%S", time.localtime())
@@ -1164,11 +1413,11 @@ def main() -> None:
                status_str, disp_bucket, disp_endpoint, disp_path))
 
         # Structured log for correlation with traffic generators
-        if log_fh is not None:
+        if log_logger is not None:
             try:
-                log_fh.write(
+                log_logger.info(
                     f"{evt.ts}\t{tstr}\t{evt.pid}\t{comm}\t{method_bucket}\t"
-                    f"{lat_ms:.3f}\t{status_str}\t{bucket}\t{endpoint}\t{path or ''}\n"
+                    f"{lat_ms:.3f}\t{status_str}\t{bucket}\t{endpoint}\t{path or ''}"
                 )
             except Exception:
                 # Logging failures should not break tracing
@@ -1188,10 +1437,14 @@ def main() -> None:
             b.perf_buffer_poll(timeout=100)
     finally:
         restore_terminal(old_terminal_settings)
+        if metrics_sink is not None:
+            metrics_sink.stop()
         print_summary(stats)
-        if log_fh is not None:
+        if transaction_logger is not None:
             try:
-                log_fh.close()
+                for handler in transaction_logger.handlers:
+                    handler.flush()
+                    handler.close()
             except Exception:
                 pass
 

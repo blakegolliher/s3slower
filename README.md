@@ -15,6 +15,8 @@ A BPF/eBPF-based tool to trace S3 API request latency at both the TLS and plain 
 - **Auto-TLS mode**: Automatically detects and attaches to available TLS libraries
 - **Latency statistics**: Per-operation p50, p90, p99 percentiles
 - **Prometheus integration**: Optional metrics export for monitoring systems
+- **Configurable logging**: YAML-driven settings for Prometheus listener, metrics refresh, and rotated transaction logs
+- **Packaging helpers**: Makefile targets for RPM/DEB builds installing binaries, config, and log directory
 - **Filtering capabilities**: Filter by PID, host, HTTP method, or minimum latency
 
 ## Requirements
@@ -53,6 +55,28 @@ A BPF/eBPF-based tool to trace S3 API request latency at both the TLS and plain 
    chmod +x s3slower.py
    ```
 
+## Configuration
+
+- Default config path: `/etc/s3slower/config.yaml` (override with `--config`).
+- Precedence: built-in defaults → config file → CLI flags.
+- Transaction logging is enabled by default and writes TSV entries to `/opt/s3slower/s3slower.log` with size-based rotation (100 MB, 5 backups). Use `logging.enabled: false` or `--no-log-file` to disable; `max_size_mb <= 0` disables rotation.
+- PyYAML is required when a config file is present (see `requirements.txt`).
+
+Example config:
+
+```yaml
+logging:
+  enabled: true
+  path: /opt/s3slower/s3slower.log
+  max_size_mb: 100
+  max_backups: 5
+prometheus:
+  host: 0.0.0.0
+  port: 9102
+metrics:
+  refresh_interval_seconds: 5
+```
+
 ## Usage
 
 ### Basic Usage
@@ -89,6 +113,11 @@ sudo ./s3slower.py --method GET
 sudo ./s3slower.py --prometheus-port 8080
 ```
 
+**Bind Prometheus + tune refresh interval:**
+```bash
+sudo ./s3slower.py --prometheus-host 127.0.0.1 --prometheus-port 8080 --metrics-refresh-interval 2
+```
+
 **Use specific TLS library:**
 ```bash
 sudo ./s3slower.py --openssl
@@ -103,6 +132,12 @@ sudo ./s3slower.py --http-only
 **Disable plain HTTP tracing (TLS libraries only):**
 ```bash
 sudo ./s3slower.py --no-http
+```
+
+**Override or disable transaction log file:**
+```bash
+sudo ./s3slower.py --log-file /var/log/s3slower.tsv --log-max-size-mb 200 --log-max-backups 10
+sudo ./s3slower.py --no-log-file
 ```
 
 ### Example Output
@@ -125,6 +160,7 @@ HEAD    200      2.15       4.56       8.90
 
 | Option | Description |
 |--------|-------------|
+| `--config PATH` | YAML config path (default: `/etc/s3slower/config.yaml`) |
 | `--pid PID` | Trace only this process ID |
 | `--openssl` | Explicitly attach to OpenSSL |
 | `--gnutls` | Explicitly attach to GnuTLS |
@@ -138,7 +174,13 @@ HEAD    200      2.15       4.56       8.90
 | `--method METHOD` | Filter by HTTP method (GET, PUT, POST, DELETE, HEAD) |
 | `--min-lat-ms MS` | Only show requests >= this latency (ms) |
 | `--include-unknown` | Include non-HTTP TLS traffic |
-| `--prometheus-port PORT` | Expose Prometheus metrics on this port |
+| `--prometheus-host HOST` | Bind address for Prometheus `/metrics` listener (overrides config) |
+| `--prometheus-port PORT` | Expose Prometheus metrics on this port (overrides config; 0 disables) |
+| `--metrics-refresh-interval SECONDS` | Interval between Prometheus metric flushes |
+| `--log-file PATH` | TSV transaction log path (overrides config; rotation still applies) |
+| `--log-max-size-mb MB` | Max log size before rotation (<=0 disables rotation) |
+| `--log-max-backups COUNT` | How many rotated logs to keep |
+| `--no-log-file` | Disable transaction logging |
 
 ## Architecture
 
@@ -165,6 +207,29 @@ The tool works by:
 4. Attaching probes to TLS read functions (SSL_read, gnutls_record_recv, PR_Read) and HTTP recv syscalls (recvfrom)
 5. Matching read events with pending write events
 6. Calculating latency and updating statistics
+
+## Packaging
+
+`Makefile` targets build RPM (rpmbuild) and DEB (fpm) packages:
+
+```bash
+make rpm        # build RHEL/Fedora RPM using rpmbuild (outputs to dist/rpmbuild/RPMS/)
+make rpm_fpm    # alternative RPM build using fpm (requires Ruby fpm gem)
+make deb        # build Debian/Ubuntu package with fpm
+```
+
+Install layout:
+- Binary: `/usr/bin/s3slower`
+- Config: `/etc/s3slower/config.yaml` (marked as a config file and not overwritten on upgrade)
+- Log dir: `/opt/s3slower/` (created by post-install script)
+
+Prereqs:
+- RPM: `rpm-build`, `tar`, `python3`, `bcc` (runtime deps are declared in the spec; Prometheus client can be installed via pip if not packaged).
+- DEB: `fpm` gem or package, plus `python3`, `bcc` runtime deps.
+
+Defaults:
+- `VERSION` defaults to `0.2.0`; override with `make VERSION=0.3.0 rpm`.
+- `ITERATION` auto-uses a timestamp so each build revs uniquely; override if needed (`make ITERATION=2 rpm`).
 
 ## Testing
 
