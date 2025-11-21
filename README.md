@@ -1,15 +1,16 @@
 # s3slower
 
-A BPF/eBPF-based tool to trace S3 API request latency at the TLS layer, providing deep visibility into HTTPS request performance for S3-compatible storage systems.
+A BPF/eBPF-based tool to trace S3 API request latency at both the TLS and plain HTTP layers, providing deep visibility into S3-compatible storage systems regardless of whether TLS is used.
 
 ## Overview
 
-`s3slower` uses eBPF (extended Berkeley Packet Filter) to instrument TLS libraries at the user-space level, capturing the complete lifecycle of HTTPS requests from TLS write to TLS read. It provides real-time latency metrics and statistics for S3 API operations without modifying application code.
+`s3slower` uses eBPF (extended Berkeley Packet Filter) to instrument TLS libraries at the user-space level and HTTP traffic at the syscall layer, capturing the complete lifecycle of S3 HTTP/HTTPS requests from write to first read. It provides real-time latency metrics and statistics for S3 API operations without modifying application code.
 
 ### Key Features
 
 - **TLS-level tracing**: Captures latency between SSL_write and SSL_read operations
-- **HTTP/S3 parsing**: Extracts HTTP method, host, path, and S3-specific metadata from encrypted traffic
+- **Plain HTTP tracing**: Captures latency for unencrypted HTTP S3 traffic via send/recv syscalls
+- **HTTP/S3 parsing**: Extracts HTTP method, host, path, and S3-specific metadata from traffic
 - **Multiple TLS libraries**: Supports OpenSSL, GnuTLS, and NSS/NSPR
 - **Auto-TLS mode**: Automatically detects and attaches to available TLS libraries
 - **Latency statistics**: Per-operation p50, p90, p99 percentiles
@@ -56,7 +57,7 @@ A BPF/eBPF-based tool to trace S3 API request latency at the TLS layer, providin
 
 ### Basic Usage
 
-Trace all HTTPS/S3 traffic system-wide:
+Trace all S3 HTTP/HTTPS traffic system-wide:
 ```bash
 sudo ./s3slower.py
 ```
@@ -94,6 +95,16 @@ sudo ./s3slower.py --openssl
 sudo ./s3slower.py --gnutls --libgnutls /usr/lib/x86_64-linux-gnu/libgnutls.so.30
 ```
 
+**Trace only plain HTTP (no TLS libraries):**
+```bash
+sudo ./s3slower.py --http-only
+```
+
+**Disable plain HTTP tracing (TLS libraries only):**
+```bash
+sudo ./s3slower.py --no-http
+```
+
 ### Example Output
 
 ```
@@ -121,6 +132,8 @@ HEAD    200      2.15       4.56       8.90
 | `--libssl PATH` | Path to OpenSSL library |
 | `--libgnutls PATH` | Path to GnuTLS library |
 | `--libnss PATH` | Path to NSS library |
+| `--http-only` | Trace only plain HTTP over TCP (disable TLS library probes) |
+| `--no-http` | Disable plain HTTP tracing; only trace TLS libraries |
 | `--host-substr STR` | Filter by Host header substring |
 | `--method METHOD` | Filter by HTTP method (GET, PUT, POST, DELETE, HEAD) |
 | `--min-lat-ms MS` | Only show requests >= this latency (ms) |
@@ -133,6 +146,7 @@ HEAD    200      2.15       4.56       8.90
 
 1. **BPF Program (Kernel Space)**:
    - Attaches uprobes to TLS library functions
+   - Attaches kprobes to sendto/recvfrom syscalls for plain HTTP
    - Captures function arguments and return values
    - Tracks per-connection state and timing
    - Sends events to user space via perf buffer
@@ -145,10 +159,10 @@ HEAD    200      2.15       4.56       8.90
    - Optionally exports Prometheus metrics
 
 The tool works by:
-1. Attaching probes to TLS write functions (SSL_write, gnutls_record_send, PR_Write)
+1. Attaching probes to TLS write functions (SSL_write, gnutls_record_send, PR_Write) and HTTP send syscalls (sendto)
 2. Parsing HTTP request headers from the write buffer
 3. Recording timestamp and connection metadata
-4. Attaching probes to TLS read functions (SSL_read, gnutls_record_recv, PR_Read)
+4. Attaching probes to TLS read functions (SSL_read, gnutls_record_recv, PR_Read) and HTTP recv syscalls (recvfrom)
 5. Matching read events with pending write events
 6. Calculating latency and updating statistics
 
@@ -172,7 +186,7 @@ sudo ./s3slower.py --host-substr "s3.amazonaws.com"
 ## Limitations
 
 - Requires root privileges for eBPF
-- Only traces TLS-encrypted traffic (not plain HTTP)
+- Supports HTTP/1.x traffic over TLS and plain TCP; HTTP/2 and other protocols are not fully supported
 - Limited to user-space TLS libraries (not kernel TLS)
 - HTTP/2 support is experimental
 - Maximum buffer sizes for request/response parsing

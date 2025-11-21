@@ -24,9 +24,12 @@ import argparse
 import ctypes as ct
 import glob
 import os
+import select
 import signal
 import sys
+import termios
 import time
+import tty
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -94,6 +97,7 @@ struct read_args_t {
 
 BPF_HASH(active_reqs, struct conn_key_t, struct req_val_t);
 BPF_HASH(read_args, u32, struct read_args_t);
+BPF_HASH(http_read_args, u32, struct read_args_t);  // separate state for plain HTTP (syscall-level)
 BPF_HASH(conn_seqs, struct conn_id_t, u64);  // track sequence numbers per connection
 BPF_PERCPU_ARRAY(tmp_evt, struct event_t, 1);
 BPF_PERF_OUTPUT(events);
@@ -348,6 +352,190 @@ int ssl_read_exit(struct pt_regs *ctx)
     read_args.delete(&tid);
     return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Plain HTTP over TCP (syscall-level: sendto/recvfrom)
+// ---------------------------------------------------------------------------
+
+// Entry for HTTP send syscalls (sendto/send)
+int http_send_enter(struct pt_regs *ctx)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    int fd = (int)PT_REGS_PARM1(ctx);       // socket fd
+    const void *buf = (const void *)PT_REGS_PARM2(ctx);
+    int len = (int)PT_REGS_PARM3(ctx);
+
+    if (len <= 0)
+        return 0;
+
+    // Store request with unique key (pid, fd, seq)
+    struct conn_key_t key = {};
+    key.pid = pid;
+    key.id  = (u64)fd;
+
+    struct req_val_t val = {};
+    val.start_ns = bpf_ktime_get_ns();
+    val.responded = 0;
+
+    int copy = len;
+    if (copy > MAX_HDR)
+        copy = MAX_HDR;
+    bpf_probe_read_user(&val.hdr, copy, buf);
+
+    // Classify method - if UNKNOWN, this might be body data or non-HTTP, skip it
+    val.op = classify_method(val.hdr, copy);
+    if (val.op == OP_UNKNOWN)
+        return 0;
+
+    // Get or create sequence number for this connection
+    struct conn_id_t conn = {};
+    conn.pid = pid;
+    conn.id = key.id;
+
+    u64 *seq_ptr = conn_seqs.lookup(&conn);
+    u64 seq = 0;
+    if (seq_ptr) {
+        seq = (*seq_ptr) + 1;
+    }
+    conn_seqs.update(&conn, &seq);
+
+    key.seq = seq;
+    active_reqs.update(&key, &val);
+    return 0;
+}
+
+// Entry for HTTP recv syscalls (recvfrom/recv)
+int http_recv_enter(struct pt_regs *ctx)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 tid = (u32)pid_tgid;
+
+    struct read_args_t a = {};
+    a.id  = (u64)PT_REGS_PARM1(ctx);          // socket fd
+    a.buf = (const void *)PT_REGS_PARM2(ctx); // user buffer
+
+    http_read_args.update(&tid, &a);
+    return 0;
+}
+
+// Exit for HTTP recv syscalls
+int http_recv_exit(struct pt_regs *ctx)
+{
+    int ret = PT_REGS_RC(ctx);
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u32 tid = (u32)pid_tgid;
+
+    struct read_args_t *ap = http_read_args.lookup(&tid);
+    if (!ap) {
+        // nothing recorded for this thread
+        return 0;
+    }
+
+    if (ret <= 0) {
+        // recv failed or EOF; drop and clean up
+        http_read_args.delete(&tid);
+        return 0;
+    }
+
+    // Use the per-CPU event buffer to store response temporarily
+    int zero = 0;
+    struct event_t *evt = tmp_evt.lookup(&zero);
+    if (!evt) {
+        http_read_args.delete(&tid);
+        return 0;
+    }
+
+    // Read response buffer into event struct (will reuse for final event if needed)
+    int rcopy = ret;
+    if (rcopy > MAX_HDR)
+        rcopy = MAX_HDR;
+    bpf_probe_read_user(&evt->resp_hdr, rcopy, ap->buf);
+
+    // Validate this is an HTTP response
+    if (!is_http_response(evt->resp_hdr, rcopy)) {
+        // Not HTTP response - might be body data or other traffic
+        http_read_args.delete(&tid);
+        return 0;
+    }
+
+    // Extract status code to check for 1xx intermediate responses
+    int status_code = extract_status_code(evt->resp_hdr, rcopy);
+
+    // Get connection info to find matching request
+    struct conn_id_t conn = {};
+    conn.pid = pid;
+    conn.id = ap->id;
+
+    // Get current sequence number for this connection
+    u64 *seq_ptr = conn_seqs.lookup(&conn);
+    if (!seq_ptr) {
+        http_read_args.delete(&tid);
+        return 0;
+    }
+
+    // Try to find matching request by checking current and recent sequence numbers
+    // Start from current seq and work backwards (in case of response ordering issues)
+    struct req_val_t *vp = NULL;
+    struct conn_key_t key = {};
+    key.pid = pid;
+    key.id = ap->id;
+
+    // Check last 10 sequence numbers (handles minor reordering)
+    u64 current_seq = *seq_ptr;
+    #pragma unroll
+    for (int i = 0; i < 10; i++) {
+        if (current_seq < i)
+            break;
+        key.seq = current_seq - i;
+        vp = active_reqs.lookup(&key);
+        if (vp && !vp->responded) {
+            // Found unresponded request
+            break;
+        }
+        vp = NULL;
+    }
+
+    if (!vp) {
+        http_read_args.delete(&tid);
+        return 0;
+    }
+
+    // Check if already responded (shouldn't happen due to check above, but be safe)
+    if (vp->responded) {
+        http_read_args.delete(&tid);
+        return 0;
+    }
+
+    // If this is a 1xx response (e.g. 100 Continue), mark as responded but don't emit event
+    // Keep the request active for the final 2xx/3xx/4xx/5xx response
+    if (status_code >= 100 && status_code < 200) {
+        vp->responded = 1;  // Mark that we've seen a response, but keep entry
+        http_read_args.delete(&tid);
+        // Don't delete from active_reqs - wait for final response
+        return 0;
+    }
+
+    // This is a final response (2xx, 3xx, 4xx, 5xx) - emit event
+    // evt already has resp_hdr filled from earlier
+    evt->ts    = bpf_ktime_get_ns();
+    evt->delta = evt->ts - vp->start_ns;
+    evt->pid   = pid;
+    evt->tid   = tid;
+    evt->op    = vp->op;
+    bpf_get_current_comm(&evt->comm, sizeof(evt->comm));
+
+    __builtin_memcpy(&evt->req_hdr, &vp->hdr, sizeof(evt->req_hdr));
+    // resp_hdr already filled above
+
+    events.perf_submit(ctx, evt, sizeof(*evt));
+
+    // Delete request after final response
+    active_reqs.delete(&key);
+    http_read_args.delete(&tid);
+    return 0;
+}
 """
 
 # ---------------------------------------------------------------------------
@@ -429,6 +617,41 @@ def attach_nss(b: BPF, libpath: str, pid: int) -> None:
                         fn_name="ssl_read_enter", pid=pid)
         b.attach_uretprobe(name=libpath, sym=sym,
                            fn_name="ssl_read_exit", pid=pid)
+
+
+def attach_http(b: BPF) -> None:
+    """
+    Attach to kernel send/recv syscalls for plain HTTP over TCP.
+
+    We only look at sendto/recvfrom; for most user-space libraries send()
+    is implemented via sendto() in the kernel, so this should cover common
+    S3 HTTP clients.
+    """
+    attached = False
+
+    try:
+        sendto_fn = b.get_syscall_fnname("sendto")
+        b.attach_kprobe(event=sendto_fn, fn_name="http_send_enter")
+        attached = True
+    except Exception:
+        pass
+
+    try:
+        recvfrom_fn = b.get_syscall_fnname("recvfrom")
+        b.attach_kprobe(event=recvfrom_fn, fn_name="http_recv_enter")
+        b.attach_kretprobe(event=recvfrom_fn, fn_name="http_recv_exit")
+        attached = True
+    except Exception:
+        pass
+
+    if attached:
+        print("Attaching to plain HTTP via sys_sendto/sys_recvfrom")
+    else:
+        print(
+            "Plain HTTP: could not attach to send/recv syscalls; "
+            "HTTP traffic will not be traced",
+            file=sys.stderr,
+        )
 
 
 def parse_http_request(raw_hdr: bytes) -> Tuple[str, str, str, int]:
@@ -648,13 +871,83 @@ def update_prometheus(bucket: str, endpoint: str, method: str,
 
 
 # ---------------------------------------------------------------------------
+# Terminal handling
+# ---------------------------------------------------------------------------
+
+def setup_terminal() -> Optional[list]:
+    """
+    Configure terminal to minimize control character interference.
+    Returns the original terminal settings to restore later, or None if not a TTY.
+    """
+    if not sys.stdin.isatty():
+        return None
+
+    try:
+        # Save original terminal settings
+        old_settings = termios.tcgetattr(sys.stdin)
+
+        # Get current settings to modify
+        new_settings = termios.tcgetattr(sys.stdin)
+
+        # Disable echo and special character processing
+        # ICANON: canonical mode (line buffering)
+        # ECHO: echo input characters
+        # ISIG: enable signals (keep this for Ctrl+C)
+        # IEXTEN: extended functions
+        new_settings[3] &= ~(termios.ICANON | termios.ECHO | termios.IEXTEN)
+
+        # Apply new settings
+        termios.tcsetattr(sys.stdin, termios.TCSANOW, new_settings)
+
+        # Disable mouse reporting and other terminal features that send escape sequences
+        # These are ANSI escape sequences to disable various reporting modes
+        sys.stdout.write('\033[?1000l')  # Disable mouse reporting
+        sys.stdout.write('\033[?1002l')  # Disable mouse tracking
+        sys.stdout.write('\033[?1003l')  # Disable all mouse reporting
+        sys.stdout.write('\033[?1004l')  # Disable focus reporting
+        sys.stdout.write('\033[?1005l')  # Disable UTF-8 mouse mode
+        sys.stdout.write('\033[?1006l')  # Disable SGR mouse mode
+        sys.stdout.write('\033[?1015l')  # Disable URXVT mouse mode
+        sys.stdout.flush()
+
+        return old_settings
+    except Exception:
+        # If we can't configure the terminal, continue anyway
+        return None
+
+
+def restore_terminal(old_settings: Optional[list]) -> None:
+    """Restore original terminal settings."""
+    if old_settings is not None and sys.stdin.isatty():
+        try:
+            termios.tcsetattr(sys.stdin, termios.TCSANOW, old_settings)
+        except Exception:
+            pass
+
+
+def flush_stdin() -> None:
+    """Flush any pending input from stdin to prevent control characters from appearing."""
+    if not sys.stdin.isatty():
+        return
+
+    try:
+        # Check if there's input available and discard it
+        while select.select([sys.stdin], [], [], 0)[0]:
+            # Read and discard available input
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+            break
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Prototype SSL/TLS-based S3 latency tracer (s3slower-style)")
+        description="S3 latency tracer using TLS libraries and plain HTTP (s3slower-style)")
     parser.add_argument("--pid", type=int, default=0,
                         help="Trace only this PID (default: all processes)")
     parser.add_argument("--openssl", action="store_true",
@@ -667,6 +960,11 @@ def main() -> None:
     parser.add_argument("--libssl", help="Explicit path to libssl.so")
     parser.add_argument("--libgnutls", help="Explicit path to libgnutls.so")
     parser.add_argument("--libnss", help="Explicit path to libnspr4.so")
+
+    parser.add_argument("--http-only", action="store_true",
+                        help="Trace only plain HTTP over TCP (disable TLS library probes)")
+    parser.add_argument("--no-http", action="store_true",
+                        help="Disable plain HTTP tracing; only trace TLS libraries")
 
     parser.add_argument("--host-substr", metavar="STR",
                         help="Only show requests whose Host header contains STR "
@@ -682,12 +980,40 @@ def main() -> None:
 
     parser.add_argument("--prometheus-port", type=int, default=0,
                         help="If >0, expose Prometheus /metrics on this port")
+    parser.add_argument("--log-file",
+                        help="If set, append raw per-request events as TSV to this file")
 
     args = parser.parse_args()
 
-    # Auto-TLS mode: if no TLS library is explicitly selected, try all of them
+    log_fh = None
+    if args.log_file:
+        try:
+            log_fh = open(args.log_file, "a", buffering=1)
+            print(f"Logging raw events to {args.log_file}")
+        except OSError as e:
+            print(f"ERROR: could not open log file {args.log_file}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.http_only and args.no_http:
+        print("ERROR: --http-only and --no-http are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
+
+    if args.http_only and (args.openssl or args.gnutls or args.nss or
+                           args.libssl or args.libgnutls or args.libnss):
+        print(
+            "ERROR: --http-only cannot be combined with TLS library options "
+            "(--openssl/--gnutls/--nss/--libssl/--libgnutls/--libnss)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Determine which tracing modes are enabled
+    want_http = not args.no_http
+    want_tls = not args.http_only
+
+    # Auto-TLS mode: if TLS is enabled and no TLS library is explicitly selected, try all of them
     auto_tls = False
-    if not (args.openssl or args.gnutls or args.nss):
+    if want_tls and not (args.openssl or args.gnutls or args.nss):
         auto_tls = True
         args.openssl = True
         args.gnutls = True
@@ -698,45 +1024,52 @@ def main() -> None:
         init_prometheus(args.prometheus_port)
         print(f"Prometheus /metrics listening on :{args.prometheus_port}")
 
+    # Setup terminal to prevent control character interference
+    old_terminal_settings = setup_terminal()
+
     b = BPF(text=BPF_TEXT)
     pid = args.pid or -1  # BCC uses -1 for "all PIDs" in uprobes
 
     # Attach libraries -------------------------------------------------------
-    if args.openssl:
-        libssl = args.libssl or find_library(["libssl.so", "libssl.so.*"])
-        if not libssl:
-            if auto_tls:
-                print("Auto TLS: OpenSSL (libssl.so) not found, skipping")
+    if want_tls:
+        if args.openssl:
+            libssl = args.libssl or find_library(["libssl.so", "libssl.so.*"])
+            if not libssl:
+                if auto_tls:
+                    print("Auto TLS: OpenSSL (libssl.so) not found, skipping")
+                else:
+                    print("Could not find libssl.so; use --libssl to specify path")
+                    sys.exit(1)
             else:
-                print("Could not find libssl.so; use --libssl to specify path")
-                sys.exit(1)
-        else:
-            print(f"Attaching to OpenSSL/BoringSSL at {libssl}")
-            attach_openssl(b, libssl, pid)
+                print(f"Attaching to OpenSSL/BoringSSL at {libssl}")
+                attach_openssl(b, libssl, pid)
 
-    if args.gnutls:
-        libgnutls = args.libgnutls or find_library(["libgnutls.so", "libgnutls.so.*"])
-        if not libgnutls:
-            if auto_tls:
-                print("Auto TLS: GnuTLS (libgnutls.so) not found, skipping")
+        if args.gnutls:
+            libgnutls = args.libgnutls or find_library(["libgnutls.so", "libgnutls.so.*"])
+            if not libgnutls:
+                if auto_tls:
+                    print("Auto TLS: GnuTLS (libgnutls.so) not found, skipping")
+                else:
+                    print("Could not find libgnutls.so; use --libgnutls to specify path")
+                    sys.exit(1)
             else:
-                print("Could not find libgnutls.so; use --libgnutls to specify path")
-                sys.exit(1)
-        else:
-            print(f"Attaching to GnuTLS at {libgnutls}")
-            attach_gnutls(b, libgnutls, pid)
+                print(f"Attaching to GnuTLS at {libgnutls}")
+                attach_gnutls(b, libgnutls, pid)
 
-    if args.nss:
-        libnss = args.libnss or find_library(["libnspr4.so", "libnspr4.so.*"])
-        if not libnss:
-            if auto_tls:
-                print("Auto TLS: NSS/NSPR (libnspr4.so) not found, skipping")
+        if args.nss:
+            libnss = args.libnss or find_library(["libnspr4.so", "libnspr4.so.*"])
+            if not libnss:
+                if auto_tls:
+                    print("Auto TLS: NSS/NSPR (libnspr4.so) not found, skipping")
+                else:
+                    print("Could not find libnspr4.so; use --libnss to specify path")
+                    sys.exit(1)
             else:
-                print("Could not find libnspr4.so; use --libnss to specify path")
-                sys.exit(1)
-        else:
-            print(f"Attaching to NSS/NSPR at {libnss}")
-            attach_nss(b, libnss, pid)
+                print(f"Attaching to NSS/NSPR at {libnss}")
+                attach_nss(b, libnss, pid)
+
+    if want_http:
+        attach_http(b)
 
     host_filter = args.host_substr.lower() if args.host_substr else None
     method_filter = {m.upper() for m in args.method} if args.method else None
@@ -756,11 +1089,16 @@ def main() -> None:
     def handle_sigint(signum, frame) -> None:  # type: ignore[override]
         nonlocal exiting
         exiting = True
+        restore_terminal(old_terminal_settings)
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    def handle_event(cpu: int, data: bytes, size: int) -> None:
+    def handle_event(cpu: int, data: bytes, size: int, log_fh=log_fh) -> None:
         evt = ct.cast(data, ct.POINTER(Event)).contents
+
+        # Users may request pid filtering; enforce it here for both TLS and HTTP events.
+        if args.pid and evt.pid != args.pid:
+            return
 
         raw_req = bytes(evt.req_hdr)
         raw_resp = bytes(evt.resp_hdr)
@@ -825,14 +1163,37 @@ def main() -> None:
               (tstr, evt.pid, comm, method_bucket, lat_ms,
                status_str, disp_bucket, disp_endpoint, disp_path))
 
+        # Structured log for correlation with traffic generators
+        if log_fh is not None:
+            try:
+                log_fh.write(
+                    f"{evt.ts}\t{tstr}\t{evt.pid}\t{comm}\t{method_bucket}\t"
+                    f"{lat_ms:.3f}\t{status_str}\t{bucket}\t{endpoint}\t{path or ''}\n"
+                )
+            except Exception:
+                # Logging failures should not break tracing
+                pass
+
 
     b["events"].open_perf_buffer(handle_event)
 
     try:
+        poll_counter = 0
         while not exiting:
+            # Flush stdin periodically to discard any control characters
+            if poll_counter % 10 == 0:  # Flush every 10 polls (1 second)
+                flush_stdin()
+            poll_counter += 1
+
             b.perf_buffer_poll(timeout=100)
     finally:
+        restore_terminal(old_terminal_settings)
         print_summary(stats)
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
