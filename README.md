@@ -18,6 +18,7 @@ A BPF/eBPF-based tool to trace S3 API request latency at both the TLS and plain 
 - **Configurable logging**: YAML-driven settings for Prometheus listener, metrics refresh, and rotated transaction logs
 - **Packaging helpers**: Makefile targets for RPM/DEB builds installing binaries, config, and log directory
 - **Filtering capabilities**: Filter by PID, host, HTTP method, or minimum latency
+- **Auto-attach watch mode**: Optional exec tracepoint watcher that auto-attaches to PIDs whose command matches a YAML target config
 
 ## Requirements
 
@@ -118,6 +119,33 @@ sudo ./s3slower.py --prometheus-port 8080
 sudo ./s3slower.py --prometheus-host 127.0.0.1 --prometheus-port 8080 --metrics-refresh-interval 2
 ```
 
+**Auto-attach matching PIDs (watch mode):**
+```bash
+sudo ./s3slower.py --watch-config                 # uses /etc/s3slower/targets.yml
+sudo ./s3slower.py --watch-config ./targets.yml   # custom path
+```
+
+Create `/etc/s3slower/targets.yml` to describe which commands to trace:
+```yaml
+targets:
+  - id: "mc"
+    match:
+      type: "exe_basename"   # also checks comm for safety
+      value: "mc"
+    mode: "go_tls"           # or "openssl"/"http"/"gnutls"/"nss"
+    prom_labels:
+      app: "minio-client"
+  - id: "aws"
+    match:
+      type: "comm"
+      value: "aws"
+    mode: "openssl"
+    prom_labels:
+      app: "aws-cli"
+```
+The watcher hooks `sched:sched_process_exec`, conservatively matches against `comm`, `/proc/<pid>/exe` basename, and optional cmdline substrings, then attaches s3slower to the PID. Duplicate attaches are avoided.
+Prometheus label set is fixed at startup; restart the tool if you add new `prom_labels` keys to the targets file.
+
 **Use specific TLS library:**
 ```bash
 sudo ./s3slower.py --openssl
@@ -143,18 +171,12 @@ sudo ./s3slower.py --no-log-file
 ### Example Output
 
 ```
-Attaching to TLS libraries...
-TIME       PID    LAT(ms)  COMM            HOST                           METHOD  PATH
-14:23:01   1234   12.34    aws             s3.amazonaws.com               GET     /mybucket/object.txt
-14:23:02   1234   45.67    aws             s3.amazonaws.com               PUT     /mybucket/large-file.zip
-14:23:03   1234   3.21     aws             s3.amazonaws.com               HEAD    /mybucket/check.txt
-
-=== Statistics for s3.amazonaws.com ===
-Method  Count    p50(ms)    p90(ms)    p99(ms)
-GET     150      8.45       15.23      45.67
-PUT     75       12.34      25.89      67.89
-HEAD    200      2.15       4.56       8.90
+TIME     PID    COMM             TARGET     OP           LAT(ms) STATUS BUCKET               ENDPOINT             PATH
+14:23:01 1234   aws              aws        GET             12.34 200    mybucket             s3.amazonaws.com     /mybucket/object.txt
+14:23:02 1234   aws              aws        PUT             45.67 200    mybucket             s3.amazonaws.com     /mybucket/large-file.zip
+14:23:03 4242   minio-mc         mc         MPU_CREATE      78.90 200    demo-bucket          play.min.io          /demo-bucket/foo?uploads
 ```
+Prometheus metrics expose `bucket`, `endpoint`, `method`, `pid`, and `target` labels by default, plus any extra labels set in `prom_labels` entries in the targets YAML.
 
 ## Command Line Options
 
@@ -180,6 +202,7 @@ HEAD    200      2.15       4.56       8.90
 | `--log-file PATH` | TSV transaction log path (overrides config; rotation still applies) |
 | `--log-max-size-mb MB` | Max log size before rotation (<=0 disables rotation) |
 | `--log-max-backups COUNT` | How many rotated logs to keep |
+| `--watch-config [PATH]` | Enable PID auto-attach using a target YAML file (default: `/etc/s3slower/targets.yml`) |
 | `--no-log-file` | Disable transaction logging |
 
 ## Architecture
@@ -198,6 +221,8 @@ HEAD    200      2.15       4.56       8.90
    - Processes kernel events
    - Parses HTTP headers from TLS payloads
    - Calculates statistics and displays results
+   - Auto-attaches to new PIDs that match the targets config (watch mode)
+   - Exposes console output and Prometheus metrics with PID/target labels
    - Optionally exports Prometheus metrics
 
 The tool works by:
@@ -247,6 +272,13 @@ export AWS_PROFILE="your-profile"
 # In another terminal, trace the traffic
 sudo ./s3slower.py --host-substr "s3.amazonaws.com"
 ```
+
+Additional test helpers for correlation:
+- `scripts/aws-s3-test.sh` — random AWS CLI traffic with per-op log
+- `scripts/curl-s3-test.sh` — curl against presigned URLs into bucket `s3slower-curl`
+- `scripts/mc-s3-test.sh` — MinIO `mc` client traffic into bucket `s3slower-mc`
+- `scripts/boto3-s3-test.py` — boto3 traffic over http/https into bucket `s3slower-boto3`
+- `scripts/s3slower_correlate.py` — compare ops logs vs s3slower `--log-file` output; use `--expected-target` to enforce correct auto-attach target labels
 
 ## Limitations
 

@@ -11,8 +11,10 @@ Usage:
 The aws-s3-test.sh OPS_LOG format (TSV) is:
   epoch_seconds  protocol  op_name  http_method  bucket  target
 
-The s3slower --log-file format (TSV) is:
-  ts_ns  time_str  pid  comm  method_bucket  lat_ms  status  bucket  endpoint  path
+The s3slower --log-file format (TSV) is (new):
+  ts_ns  time_str  pid  comm  target  method_bucket  lat_ms  status  bucket  endpoint  path
+
+Older logs (without the target column) are still accepted.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ class TraceRecord:
     time_str: str
     pid: int
     comm: str
+    target: str
     method_bucket: str
     lat_ms: float
     status: str
@@ -123,16 +126,25 @@ def parse_trace_log(path: str) -> List[TraceRecord]:
                 try:
                     ts_ns = int(parts[0])
                     pid = int(parts[2])
-                    lat_ms = float(parts[5])
+                    lat_ms = float(parts[6] if len(parts) >= 11 else parts[5])
                 except ValueError:
                     continue
                 time_str = parts[1]
                 comm = parts[3]
-                method_bucket = parts[4].upper()
-                status = parts[6]
-                bucket = parts[7]
-                endpoint = parts[8]
-                path = parts[9]
+                if len(parts) >= 11:
+                    target = parts[4]
+                    method_bucket = parts[5].upper()
+                    status = parts[7]
+                    bucket = parts[8]
+                    endpoint = parts[9]
+                    path = parts[10] if len(parts) > 10 else ""
+                else:
+                    target = ""
+                    method_bucket = parts[4].upper()
+                    status = parts[6]
+                    bucket = parts[7]
+                    endpoint = parts[8]
+                    path = parts[9] if len(parts) > 9 else ""
                 traces.append(
                     TraceRecord(
                         index=len(traces),
@@ -140,6 +152,7 @@ def parse_trace_log(path: str) -> List[TraceRecord]:
                         time_str=time_str,
                         pid=pid,
                         comm=comm,
+                        target=target,
                         method_bucket=method_bucket,
                         lat_ms=lat_ms,
                         status=status,
@@ -178,10 +191,10 @@ def prefix_in_path(prefix: str, path: str) -> bool:
     return False
 
 
-def op_matches_trace(op: OpRecord, tr: TraceRecord) -> bool:
-    # Bucket must match exactly.
-    if tr.bucket != op.bucket:
-        return False
+def op_matches_trace(op: OpRecord, tr: TraceRecord, expected_target: Optional[str]) -> bool:
+    if expected_target is not None:
+        if tr.target != expected_target:
+            return False
 
     path = tr.path or ""
     method = tr.method_bucket.upper()
@@ -190,7 +203,16 @@ def op_matches_trace(op: OpRecord, tr: TraceRecord) -> bool:
     if op.op_name == "LIST_PREFIX":
         if method != "GET":
             return False
+        if "list-type=" not in path and "prefix=" not in path:
+            return False  # avoid matching object GETs that happen to contain the prefix string
+        bucket_ok = (tr.bucket == op.bucket) or (op.bucket in path)
+        if not bucket_ok:
+            return False
         return prefix_in_path(op.target, path)
+
+    # Bucket must match exactly for other ops.
+    if tr.bucket != op.bucket:
+        return False
 
     # Key-based operations
     if not key_in_path(op.target, path):
@@ -222,6 +244,7 @@ def op_matches_trace(op: OpRecord, tr: TraceRecord) -> bool:
 def correlate(
     ops: List[OpRecord],
     traces: List[TraceRecord],
+    expected_target: Optional[str],
 ) -> Tuple[Dict[int, int], List[int]]:
     """
     Greedy correlation: for each op in order, find the first unused trace
@@ -240,7 +263,7 @@ def correlate(
         for tr in traces:
             if used[tr.index]:
                 continue
-            if op_matches_trace(op, tr):
+            if op_matches_trace(op, tr, expected_target):
                 match_idx = tr.index
                 break
         if match_idx is None:
@@ -304,6 +327,7 @@ def summarize(
     mapping: Dict[int, int],
     missing: List[int],
     mpu_checks: List[MultipartCheck],
+    expected_target: Optional[str],
 ) -> None:
     total_ops = len(ops)
     matched_ops = len(mapping)
@@ -318,6 +342,9 @@ def summarize(
     print(f"Matched ops:  {matched_ops}")
     print(f"Missing ops:  {missing_ops}")
     print(f"Unused trace events (not matched to any op): {unused_traces}")
+    if expected_target:
+        seen_targets = {tr.target for tr in traces if tr.target}
+        print(f"Expected target: {expected_target} (seen targets: {', '.join(sorted(seen_targets)) or 'none'})")
 
     # Breakdown by op_name
     by_op_total: Dict[str, int] = {}
@@ -366,6 +393,7 @@ def write_markdown_summary(
     mapping: Dict[int, int],
     missing: List[int],
     mpu_checks: List[MultipartCheck],
+    expected_target: Optional[str],
 ) -> None:
     total_ops = len(ops)
     matched_ops = len(mapping)
@@ -393,6 +421,10 @@ def write_markdown_summary(
         f.write(f"| Matched operations | {matched_ops} |\n")
         f.write(f"| Missing operations | {missing_ops} |\n")
         f.write(f"| Unused trace events | {unused_traces} |\n\n")
+        if expected_target:
+            seen_targets = {tr.target for tr in traces if tr.target}
+            f.write(f"| Expected target | {expected_target} |\n")
+            f.write(f"| Seen targets | {', '.join(sorted(seen_targets)) or 'none'} |\n\n")
 
         f.write("## Per Operation Type\n\n")
         f.write("| Operation | Total | Missing |\n")
@@ -424,10 +456,11 @@ def write_markdown_summary(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Correlate aws-s3-test.sh ops log with s3slower --log-file output",
+        description="Correlate client ops logs (aws/curl/mc/boto3) with s3slower --log-file output",
     )
-    parser.add_argument("--ops", required=True, help="Path to aws-s3-test.sh OPS_LOG file")
-    parser.add_argument("--trace", required=True, help="Path to s3slower --log-file output")
+    parser.add_argument("--ops", required=True, help="Path to ops log file")
+    parser.add_argument("--trace", required=True, help="Path to s3slower --log-file output (TSV)")
+    parser.add_argument("--expected-target", help="Require matching trace events to carry this s3slower target label")
     parser.add_argument(
         "--max-missing",
         type=int,
@@ -451,14 +484,14 @@ def main() -> None:
         print(f"ERROR: no trace events parsed from {args.trace}", file=sys.stderr)
         sys.exit(1)
 
-    mapping, missing = correlate(ops, traces)
+    mapping, missing = correlate(ops, traces, args.expected_target)
     mpu_checks = build_multipart_checks(ops, traces)
-    summarize(ops, traces, mapping, missing, mpu_checks)
+    summarize(ops, traces, mapping, missing, mpu_checks, args.expected_target)
     print_missing_details(ops, missing, args.max_missing)
 
     if args.md_out:
         try:
-            write_markdown_summary(args.md_out, ops, traces, mapping, missing, mpu_checks)
+            write_markdown_summary(args.md_out, ops, traces, mapping, missing, mpu_checks, args.expected_target)
             print(f"\nMarkdown summary written to {args.md_out}")
         except OSError as e:
             print(f"ERROR: failed to write markdown summary {args.md_out}: {e}", file=sys.stderr)
@@ -466,4 +499,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
