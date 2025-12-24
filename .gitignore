@@ -27,7 +27,7 @@ MANIFEST
 
 # PyInstaller
 *.manifest
-*.spec
+# Note: *.spec is NOT ignored because we need packaging/s3slower.spec for RPM builds
 
 # Unit test / coverage reports
 htmlcov/

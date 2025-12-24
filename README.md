@@ -315,7 +315,10 @@ MIT License - See LICENSE file for details
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
+- Setting up a development environment
+- Running tests
+- Submitting pull requests
 
 ## Acknowledgments
 

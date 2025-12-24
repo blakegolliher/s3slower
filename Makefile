@@ -39,7 +39,7 @@ distdir:
 
 $(TARBALL): distdir
 	tar czf $(TARBALL) --transform "s|^|$(APP_NAME)-$(VERSION)/|" \
-		s3slower.py README.md LICENSE requirements.txt packaging/config.yaml packaging/postinstall.sh Makefile scripts
+		s3slower.py s3slower/ README.md LICENSE requirements.txt packaging/ Makefile scripts
 
 rpm: $(TARBALL)
 	mkdir -p $(RPM_TOPDIR)/{BUILD,RPMS,SOURCES,SPECS,SRPMS,TMP}
