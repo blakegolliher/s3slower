@@ -96,6 +96,15 @@ tidy:
 deps:
 	go mod download
 
+# Generate BPF program (requires clang, libbpf-dev)
+.PHONY: generate
+generate:
+	@echo "Generating BPF program..."
+	@which bpftool > /dev/null || (echo "bpftool required for vmlinux.h generation" && exit 1)
+	@which clang > /dev/null || (echo "clang required for BPF compilation" && exit 1)
+	@[ -f internal/ebpf/bpf/vmlinux.h ] || bpftool btf dump file /sys/kernel/btf/vmlinux format c > internal/ebpf/bpf/vmlinux.h
+	go generate ./internal/ebpf/...
+
 # Build RPM package using nfpm
 .PHONY: rpm
 rpm: build
@@ -169,6 +178,7 @@ help:
 	@echo "  rpm          Build RPM package"
 	@echo "  deb          Build DEB package"
 	@echo "  packages     Build all packages"
+	@echo "  generate     Generate BPF program (requires clang, bpftool)"
 	@echo "  install      Install to /usr/local/bin"
 	@echo "  uninstall    Uninstall"
 	@echo "  clean        Clean build artifacts"
