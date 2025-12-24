@@ -23,8 +23,11 @@ requires = [
 # pip install .[test]
 extras_require = {
     "test": [
-        "pytest>=6.2.4",
+        "pytest>=7.0.0",
         "pytest-asyncio>=0.21.0",
+        "pytest-cov>=4.0.0",
+        "pytest-mock>=3.10.0",
+        "pytest-html>=4.0.0",
     ]
 }
 
