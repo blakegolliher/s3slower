@@ -1,5 +1,7 @@
 # S3Slower - S3 Client Latency Monitor
 
+> **⚠️ Refactoring in Progress**: This project is being refactored from Python to Go. See the [Go Implementation](#go-implementation-in-progress) section below for details.
+
 S3Slower is a production-ready tool for monitoring S3 client-side latency using eBPF. It traces HTTP requests and responses from S3 clients without requiring SDK instrumentation, providing detailed metrics via Prometheus and other exporters.
 
 ## Features
@@ -401,4 +403,68 @@ Apache License 2.0 - see LICENSE file for details.
 | S3Slower | eBPF | No instrumentation, minimal overhead | Requires root, Linux only |
 | AWS X-Ray | SDK tracing | Rich details, cloud integration | Requires code changes |
 | tcpdump | Packet capture | Universal | Manual analysis needed |
-| Application logs | Custom logging | Application context | Requires code changes | 
+| Application logs | Custom logging | Application context | Requires code changes |
+
+## Go Implementation (In Progress)
+
+We are actively refactoring S3Slower from Python to Go to provide:
+
+- **Single static binary** - No Python runtime or dependencies needed
+- **Easy RPM/DEB packaging** - Simple installation via package managers
+- **Lower memory footprint** - Reduced resource consumption
+- **Faster startup** - No interpreter overhead
+- **Native eBPF support** - Using cilium/ebpf library
+
+### Current Status
+
+| Component | Python | Go | Status |
+|-----------|--------|-----|--------|
+| Config loading | ✅ | ✅ | Complete |
+| HTTP parsing | ✅ | ✅ | Complete |
+| Process watcher | ✅ | ✅ | Complete |
+| Event processing | ✅ | ✅ | Complete |
+| Prometheus metrics | ✅ | ✅ | Complete |
+| Terminal output | ✅ | ✅ | Complete |
+| eBPF loader | ✅ (BCC) | 🚧 | In Progress |
+| CLI commands | ✅ | ✅ | Complete |
+| RPM packaging | ❌ | ✅ | Complete |
+
+### Test Coverage
+
+- **Python tests**: 340 passing tests
+- **Go tests**: 325 passing tests
+
+### Try the Go Version
+
+```bash
+# Build from source
+cd go
+make build
+
+# Run tests
+make test
+
+# Build RPM package
+make rpm
+```
+
+### Go Project Structure
+
+```
+go/
+├── cmd/s3slower/          # Main entry point
+├── internal/
+│   ├── cmd/               # CLI commands
+│   ├── config/            # YAML configuration
+│   ├── http/              # HTTP parsing
+│   ├── watcher/           # Process watching
+│   ├── event/             # Event processing
+│   ├── metrics/           # Prometheus exporter
+│   ├── terminal/          # Console output
+│   └── utils/             # Utilities
+├── Makefile               # Build system
+├── nfpm.yaml              # Package configuration
+└── README.md              # Go-specific docs
+```
+
+For more details, see [go/README.md](go/README.md). 
