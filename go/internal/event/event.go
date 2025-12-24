@@ -184,6 +184,16 @@ func (p *EventProcessor) Events() <-chan *S3Event {
 	return p.eventChan
 }
 
+// SendEvent sends an event directly to the channel (non-blocking).
+func (p *EventProcessor) SendEvent(event *S3Event) bool {
+	select {
+	case p.eventChan <- event:
+		return true
+	default:
+		return false
+	}
+}
+
 // ProcessWrite handles a write/send event.
 func (p *EventProcessor) ProcessWrite(pid, tid uint32, fd int32, comm string, data []byte, timestamp time.Time) {
 	event := NewS3Event()
