@@ -39,10 +39,12 @@ func TestWriteHeader(t *testing.T) {
 
 		output := buf.String()
 		assert.Contains(t, output, "TIME")
-		assert.Contains(t, output, "PID")
-		assert.Contains(t, output, "COMM")
-		assert.Contains(t, output, "OPERATION")
+		assert.Contains(t, output, "METHOD")
+		assert.Contains(t, output, "BUCKET")
+		assert.Contains(t, output, "ENDPOINT")
+		assert.Contains(t, output, "BYTES")
 		assert.Contains(t, output, "LAT(ms)")
+		assert.Contains(t, output, "KEY")
 	})
 
 	t.Run("header_only_written_once", func(t *testing.T) {
@@ -89,16 +91,18 @@ func TestWriteEvent(t *testing.T) {
 		var buf bytes.Buffer
 		w := NewWriter(&buf, OutputModeTable, 50)
 
-		w.WriteEvent(makeTestEvent())
+		e := makeTestEvent()
+		e.Path = "/mybucket/data/mykey.json"
+		e.Endpoint = "s3.amazonaws.com"
+		w.WriteEvent(e)
 
 		output := buf.String()
 		assert.Contains(t, output, "10:30:45")
-		assert.Contains(t, output, "12345")
-		assert.Contains(t, output, "aws")
-		assert.Contains(t, output, "GET_OBJECT")
-		assert.Contains(t, output, "200")
-		assert.Contains(t, output, "123.45")
+		assert.Contains(t, output, "GET")
 		assert.Contains(t, output, "mybucket")
+		assert.Contains(t, output, "s3.amazonaws.com")
+		assert.Contains(t, output, "1024")
+		assert.Contains(t, output, "123.45")
 	})
 
 	t.Run("simple_mode", func(t *testing.T) {
