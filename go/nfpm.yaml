@@ -1,0 +1,142 @@
+# nfpm configuration for s3slower packaging
+# Documentation: https://nfpm.goreleaser.com/configuration/
+
+name: s3slower
+arch: amd64
+platform: linux
+version: ${VERSION:-0.1.0}
+release: 1
+section: utils
+priority: optional
+maintainer: S3Slower Team <s3slower@example.com>
+description: |
+  S3Slower - eBPF-based S3 client latency tracer
+
+  S3Slower is a production-ready monitoring tool that traces S3 client-side
+  latency without requiring SDK instrumentation. It monitors HTTP/S3 traffic
+  from any S3 client application and exports metrics via Prometheus.
+
+vendor: S3Slower
+homepage: https://github.com/s3slower/s3slower
+license: Apache-2.0
+
+# Contents to package
+contents:
+  # Main binary
+  - src: build/s3slower
+    dst: /usr/bin/s3slower
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  # Systemd service file
+  - src: ../systemd/s3slower.service
+    dst: /usr/lib/systemd/system/s3slower.service
+    type: config|noreplace
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  # Default configuration
+  - src: ../s3slower.yaml
+    dst: /etc/s3slower/s3slower.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  # Create config directory
+  - dst: /etc/s3slower
+    type: dir
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  # Create log directory
+  - dst: /var/log/s3slower
+    type: dir
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+# RPM-specific configuration
+rpm:
+  group: Applications/System
+  compression: gzip
+
+  # Scriptlets
+  scripts:
+    preinstall: |
+      # Pre-install script
+      echo "Installing s3slower..."
+
+    postinstall: |
+      # Post-install script
+      systemctl daemon-reload
+      echo ""
+      echo "S3Slower has been installed."
+      echo ""
+      echo "To start the service:"
+      echo "  sudo systemctl start s3slower"
+      echo ""
+      echo "To enable at boot:"
+      echo "  sudo systemctl enable s3slower"
+      echo ""
+      echo "Configuration: /etc/s3slower/s3slower.yaml"
+      echo ""
+
+    preremove: |
+      # Pre-remove script
+      systemctl stop s3slower 2>/dev/null || true
+      systemctl disable s3slower 2>/dev/null || true
+
+    postremove: |
+      # Post-remove script
+      systemctl daemon-reload
+
+# DEB-specific configuration
+deb:
+  compression: gzip
+
+  scripts:
+    preinstall: |
+      #!/bin/sh
+      echo "Installing s3slower..."
+
+    postinstall: |
+      #!/bin/sh
+      systemctl daemon-reload
+      echo ""
+      echo "S3Slower has been installed."
+      echo ""
+      echo "To start the service:"
+      echo "  sudo systemctl start s3slower"
+      echo ""
+      echo "To enable at boot:"
+      echo "  sudo systemctl enable s3slower"
+      echo ""
+      echo "Configuration: /etc/s3slower/s3slower.yaml"
+      echo ""
+
+    preremove: |
+      #!/bin/sh
+      systemctl stop s3slower 2>/dev/null || true
+      systemctl disable s3slower 2>/dev/null || true
+
+    postremove: |
+      #!/bin/sh
+      systemctl daemon-reload
+
+# Overrides for additional architectures
+overrides:
+  arm64:
+    contents:
+      - src: build/s3slower-linux-arm64
+        dst: /usr/bin/s3slower
+        file_info:
+          mode: 0755

@@ -1,0 +1,67 @@
+# Systemd service file for S3Slower
+#
+# Installation:
+#   sudo cp s3slower.service /usr/lib/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable s3slower
+#   sudo systemctl start s3slower
+#
+# Logs:
+#   sudo journalctl -u s3slower -f
+
+[Unit]
+Description=S3Slower - eBPF-based S3 Client Latency Tracer
+Documentation=https://github.com/s3slower/s3slower
+After=network.target
+
+# Wait for kernel modules if needed
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+
+# Run as root (required for eBPF)
+User=root
+Group=root
+
+# Main binary with Prometheus exporter enabled
+ExecStart=/usr/bin/s3slower run --prometheus --config /etc/s3slower/s3slower.yaml
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=600
+StartLimitBurst=5
+
+# Security hardening (where possible with eBPF requirements)
+NoNewPrivileges=no
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+# Required capabilities for eBPF
+AmbientCapabilities=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON CAP_SYS_PTRACE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON CAP_SYS_PTRACE
+
+# Resource limits
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+
+# Working directory
+WorkingDirectory=/var/lib/s3slower
+
+# Environment
+Environment=HOME=/var/lib/s3slower
+Environment=GOMAXPROCS=4
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=s3slower
+
+# Watchdog
+WatchdogSec=30
+
+[Install]
+WantedBy=multi-user.target
