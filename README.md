@@ -425,14 +425,26 @@ We are actively refactoring S3Slower from Python to Go to provide:
 | Event processing | ✅ | ✅ | Complete |
 | Prometheus metrics | ✅ | ✅ | Complete |
 | Terminal output | ✅ | ✅ | Complete |
-| eBPF loader | ✅ (BCC) | 🚧 | In Progress |
+| eBPF loader | ✅ (BCC) | ✅ (cilium/ebpf) | Complete |
 | CLI commands | ✅ | ✅ | Complete |
 | RPM packaging | ❌ | ✅ | Complete |
+
+### eBPF Tracing Modes
+
+The Go implementation supports multiple tracing modes:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `http` | Kprobes on sys_read/sys_write | Plain HTTP traffic |
+| `openssl` | Uprobes on SSL_read/SSL_write | HTTPS via OpenSSL |
+| `gnutls` | Uprobes on gnutls_record_* | HTTPS via GnuTLS |
+| `nss` | Uprobes on PR_Read/PR_Write | HTTPS via NSS |
+| `auto` | Attach all available probes | Mixed traffic |
 
 ### Test Coverage
 
 - **Python tests**: 340 passing tests
-- **Go tests**: 325 passing tests
+- **Go tests**: 441 passing tests
 
 ### Try the Go Version
 
@@ -443,6 +455,9 @@ make build
 
 # Run tests
 make test
+
+# Generate BPF program (requires clang, bpftool)
+make generate
 
 # Build RPM package
 make rpm
@@ -456,12 +471,17 @@ go/
 ├── internal/
 │   ├── cmd/               # CLI commands
 │   ├── config/            # YAML configuration
-│   ├── http/              # HTTP parsing
-│   ├── watcher/           # Process watching
+│   ├── ebpf/              # eBPF loader (cilium/ebpf)
+│   │   ├── bpf/           # BPF C source code
+│   │   ├── tracer.go      # BPF program management
+│   │   ├── library.go     # TLS library detection
+│   │   └── pipeline.go    # Event processing pipeline
 │   ├── event/             # Event processing
+│   ├── http/              # HTTP parsing
 │   ├── metrics/           # Prometheus exporter
 │   ├── terminal/          # Console output
-│   └── utils/             # Utilities
+│   ├── utils/             # Utilities
+│   └── watcher/           # Process watching
 ├── Makefile               # Build system
 ├── nfpm.yaml              # Package configuration
 └── README.md              # Go-specific docs
