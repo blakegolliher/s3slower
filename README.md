@@ -20,7 +20,7 @@
 ```
 TIME     PID    COMM             TARGET     OP           LAT(ms) STATUS BUCKET               ENDPOINT
 14:23:01 1234   aws              aws        GET             12.34 200    mybucket             s3.amazonaws.com
-14:23:02 1234   aws              PUT            145.67 200    mybucket             s3.amazonaws.com
+14:23:02 1234   aws              aws        PUT            145.67 200    mybucket             s3.amazonaws.com
 14:23:03 5678   python3          boto3      LIST             8.21 200    data-lake            s3.us-west-2.amazonaws.com
 ```
 

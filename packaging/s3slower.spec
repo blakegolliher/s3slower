@@ -4,7 +4,7 @@ Release:        %{release}%{?dist}
 Summary:        eBPF-based S3 latency tracer
 
 License:        MIT
-URL:            https://github.com/s3slower/s3slower
+URL:            https://github.com/blakegolliher/s3slower
 Source0:        %{name}-%{version}.tar.gz
 
 BuildArch:      noarch
@@ -66,11 +66,11 @@ chmod 755 /opt/%{name}
 %dir /opt/%{name}
 
 %changelog
-* Tue Jan 01 2025 s3slower contributors <s3slower@example.com> - 0.2.0
+* Tue Jan 01 2025 s3slower contributors <blakegolliher.s3slower@gmail.com> - 0.2.0
 - Modular package structure
 - Added curl and boto3 test scripts
 - Plain HTTP tracing support
 - Prometheus metrics with customizable labels
 
-* Sun Dec 01 2024 s3slower contributors <s3slower@example.com> - 0.1.0
+* Sun Dec 01 2024 s3slower contributors <blakegolliher.s3slower@gmail.com> - 0.1.0
 - Initial release
