@@ -71,6 +71,25 @@ DEFAULT_METRICS_REFRESH_SEC = 5.0
 DEFAULT_PROM_HOST = "0.0.0.0"
 DEFAULT_PROM_PORT = 0
 
+# Display formatting constants
+DISPLAY_BUCKET_MAX_WIDTH = 20
+DISPLAY_ENDPOINT_MAX_WIDTH = 20
+DISPLAY_TRUNCATE_SUFFIX = ".."
+
+# Tracing constants
+PERF_BUFFER_POLL_TIMEOUT_MS = 100
+STDIN_FLUSH_INTERVAL = 10  # Flush stdin every N poll cycles
+
+# Minimum metrics refresh interval (seconds)
+MIN_METRICS_REFRESH_INTERVAL = 0.1
+
+# Library patterns for TLS library discovery
+TLS_LIBRARY_PATTERNS = {
+    "openssl": ["libssl.so", "libssl.so.*"],
+    "gnutls": ["libgnutls.so", "libgnutls.so.*"],
+    "nss": ["libnspr4.so", "libnspr4.so.*"],
+}
+
 
 @dataclass
 class RuntimeSettings:
@@ -1275,7 +1294,7 @@ class MetricsAggregator:
     """
 
     def __init__(self, refresh_interval: float) -> None:
-        self.refresh_interval = max(refresh_interval, 0.1)
+        self.refresh_interval = max(refresh_interval, MIN_METRICS_REFRESH_INTERVAL)
         self._lock = threading.Lock()
         self._pending: List[Tuple[str, str, str, float, int, int, str, str, Dict[str, str]]] = []
         self._stop_evt = threading.Event()
@@ -1480,21 +1499,30 @@ class TracerCore:
         self._lock = threading.Lock()
 
     def _resolve_lib_path(self, mode: str) -> Optional[str]:
-        if mode == "openssl":
-            if self.libssl_path:
-                return self.libssl_path
-            self.libssl_path = find_library(["libssl.so", "libssl.so.*"])
-            return self.libssl_path
-        if mode == "gnutls":
-            if self.libgnutls_path:
-                return self.libgnutls_path
-            self.libgnutls_path = find_library(["libgnutls.so", "libgnutls.so.*"])
-            return self.libgnutls_path
-        if mode == "nss":
-            if self.libnss_path:
-                return self.libnss_path
-            self.libnss_path = find_library(["libnspr4.so", "libnspr4.so.*"])
-            return self.libnss_path
+        """Resolve and cache the library path for a given TLS mode."""
+        # Map mode to attribute name for caching
+        mode_to_attr = {
+            "openssl": "libssl_path",
+            "gnutls": "libgnutls_path",
+            "nss": "libnss_path",
+        }
+
+        attr_name = mode_to_attr.get(mode)
+        if attr_name is None:
+            return None
+
+        # Return cached path if available
+        cached = getattr(self, attr_name, None)
+        if cached:
+            return cached
+
+        # Look up library and cache the result
+        patterns = TLS_LIBRARY_PATTERNS.get(mode)
+        if patterns:
+            resolved = find_library(patterns)
+            setattr(self, attr_name, resolved)
+            return resolved
+
         return None
 
     def _register_pid_meta(self, pid: int, target_name: Optional[str],
@@ -1596,57 +1624,90 @@ class TracerCore:
         self.b["events"].open_perf_buffer(self._handle_event)
         self._perf_opened = True
 
+    @staticmethod
+    def _truncate_for_display(value: str, max_width: int) -> str:
+        """Truncate a string for display, adding ellipsis if needed."""
+        if len(value) > max_width:
+            return value[: max_width - len(DISPLAY_TRUNCATE_SUFFIX)] + DISPLAY_TRUNCATE_SUFFIX
+        return value
+
+    def _passes_method_filter(self, method: str) -> bool:
+        """Check if the HTTP method passes the configured filter."""
+        if self.method_filter is None:
+            return True
+
+        if method:
+            return method.upper() in self.method_filter
+        else:
+            return self.include_unknown
+
+    def _passes_host_filter(self, host: str) -> bool:
+        """Check if the host passes the configured filter."""
+        if self.host_filter is None:
+            return True
+
+        if not host:
+            return False
+
+        return self.host_filter in host.lower()
+
+    @staticmethod
+    def _classify_method_bucket(method: str, path: str, op_fallback: str) -> str:
+        """
+        Classify the method for stats/metrics.
+
+        Returns the appropriate bucket name (e.g., GET, PUT, MPU_CREATE, MPU_COMPLETE).
+        """
+        method_upper = method.upper() if method else ""
+        method_bucket = method_upper if method_upper else op_fallback
+
+        # Friendly MPU naming:
+        #   POST ... ?uploads              -> MPU_CREATE
+        #   POST ... ?uploadId=...         -> MPU_COMPLETE
+        if method_upper == "POST" and path:
+            if "uploads" in path and "uploadId=" not in path:
+                method_bucket = "MPU_CREATE"
+            elif "uploadId=" in path:
+                method_bucket = "MPU_COMPLETE"
+
+        return method_bucket
+
     def _handle_event(self, cpu: int, data: bytes, size: int) -> None:
         evt = ct.cast(data, ct.POINTER(Event)).contents
 
+        # Early exit for PID filtering
         if self.pid_filter is not None and evt.pid != self.pid_filter:
             return
 
         if self.restrict_to_attached and evt.pid not in self.pid_targets:
             return
 
+        # Parse HTTP request/response
         raw_req = bytes(evt.req_hdr)
         raw_resp = bytes(evt.resp_hdr)
 
         method, host, path, content_length = parse_http_request(raw_req)
         status_code = parse_http_response(raw_resp)
 
+        # Filter unknown methods if not explicitly included
         if not method and not self.include_unknown:
             return
 
         op_name = OP_MAP.get(evt.op, "UNK")
 
-        # Filters
-        if self.method_filter is not None:
-            if method:
-                if method.upper() not in self.method_filter:
-                    return
-            else:
-                if not self.include_unknown:
-                    return
+        # Apply configured filters
+        if not self._passes_method_filter(method):
+            return
 
-        if self.host_filter is not None:
-            if not host or self.host_filter not in host.lower():
-                return
+        if not self._passes_host_filter(host):
+            return
 
         lat_ms = ns_to_ms(evt.delta)
         if lat_ms < self.min_lat_ms:
             return
 
         bucket, endpoint = parse_bucket_endpoint(host, path)
-
-        # Base method bucket: HTTP method if we have one, otherwise fallback (GET/PUT/HEAD/POST/DEL/UNK)
-        method_upper = method.upper() if method else ""
-        method_bucket = method_upper if method_upper else op_name
-
-        # Friendly MPU naming:
-        #   POST ... ?uploads              -> MPU_CREATE
-        #   POST ... ?uploadId=...        -> MPU_COMPLETE
-        if method_upper == "POST" and path:
-            if "uploads" in path and "uploadId=" not in path:
-                method_bucket = "MPU_CREATE"
-            elif "uploadId=" in path:
-                method_bucket = "MPU_COMPLETE"
+        method_bucket = self._classify_method_bucket(method, path, op_name)
 
         # Update local stats
         self.stats[method_bucket].append(lat_ms)
@@ -1674,8 +1735,8 @@ class TracerCore:
         tstr = time.strftime("%H:%M:%S", time.localtime())
         comm = evt.comm.decode("utf-8", "replace").rstrip("\x00")
 
-        disp_bucket = bucket[:18] + ".." if len(bucket) > 20 else bucket
-        disp_endpoint = endpoint[:18] + ".." if len(endpoint) > 20 else endpoint
+        disp_bucket = self._truncate_for_display(bucket, DISPLAY_BUCKET_MAX_WIDTH)
+        disp_endpoint = self._truncate_for_display(endpoint, DISPLAY_ENDPOINT_MAX_WIDTH)
         disp_path = path or ""
         status_str = str(status_code) if status_code > 0 else "-"
         target_disp = target_label or ""
@@ -1699,10 +1760,10 @@ class TracerCore:
         self._open_perf_buffer()
         poll_counter = 0
         while not stop_event.is_set():
-            if poll_counter % 10 == 0:  # Flush every 10 polls (1 second)
+            if poll_counter % STDIN_FLUSH_INTERVAL == 0:
                 flush_stdin()
             poll_counter += 1
-            self.b.perf_buffer_poll(timeout=100)
+            self.b.perf_buffer_poll(timeout=PERF_BUFFER_POLL_TIMEOUT_MS)
 # Main
 # ---------------------------------------------------------------------------
 
