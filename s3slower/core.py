@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 #
-# s3slower-ssl.py
+# s3slower - eBPF-based S3 latency tracer
 #
-# Prototype: trace HTTPS(S3) request latency by hooking user-space TLS
-# libraries (OpenSSL/BoringSSL, GnuTLS, NSS) via uprobes.
+# Traces S3 API request latency at the TLS and plain HTTP layers by hooking
+# user-space TLS libraries (OpenSSL/BoringSSL, GnuTLS, NSS) via uprobes and
+# syscalls via kprobes.
 #
 # Features:
-#   - Latency from TLS write (request) -> first TLS read (response).
-#   - HTTP/S3 parsing: method, host, path, bucket, endpoint.
-#   - Content-Length → request size (bytes).
-#   - Response status code (HTTP/1.x).
-#   - Text output + per-op p50/p90/p99 summaries.
-#   - Optional Prometheus /metrics with:
-#       * s3slower_requests_total{bucket,endpoint,method}
-#       * s3slower_request_latency_seconds{bucket,endpoint,method}
-#       * s3slower_request_bytes_total{bucket,endpoint,method}
-#       * s3slower_responses_total{bucket,endpoint,method,status}
+#   - Latency from TLS write (request) -> first TLS read (response)
+#   - Plain HTTP tracing via sendto/recvfrom syscalls
+#   - HTTP/S3 parsing: method, host, path, bucket, endpoint
+#   - Content-Length -> request size (bytes)
+#   - Response status code (HTTP/1.x)
+#   - Text output + per-op p50/p90/p99 summaries
+#   - Prometheus metrics export
+#   - Auto-attach watch mode for dynamic process tracing
 #
 
 from __future__ import annotations

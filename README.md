@@ -1,10 +1,32 @@
 # s3slower
 
-A BPF/eBPF-based tool to trace S3 API request latency at both the TLS and plain HTTP layers, providing deep visibility into S3-compatible storage systems regardless of whether TLS is used.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: Linux](https://img.shields.io/badge/Platform-Linux-green.svg)](https://kernel.org)
+[![eBPF](https://img.shields.io/badge/eBPF-powered-orange.svg)](https://ebpf.io)
+
+**Trace S3 request latency without changing your code.**
+
+> Ever wondered why your S3 requests are slow? s3slower uses eBPF to trace every S3 API call at the TLS layer—no code changes, no proxies, no sampling. See exactly which requests are slow, to which bucket, with what latency.
+
+## Why s3slower?
+
+- **Zero instrumentation** — Works with any S3 client (AWS CLI, boto3, SDKs, curl) without modification
+- **TLS visibility** — Traces encrypted HTTPS traffic by hooking TLS libraries, not network packets
+- **Production-ready** — Prometheus metrics, log rotation, auto-attach to new processes
+- **Universal** — Works with AWS S3, MinIO, Ceph, and any S3-compatible storage
+
+## Quick Demo
+
+```
+TIME     PID    COMM             TARGET     OP           LAT(ms) STATUS BUCKET               ENDPOINT
+14:23:01 1234   aws              aws        GET             12.34 200    mybucket             s3.amazonaws.com
+14:23:02 1234   aws              PUT            145.67 200    mybucket             s3.amazonaws.com
+14:23:03 5678   python3          boto3      LIST             8.21 200    data-lake            s3.us-west-2.amazonaws.com
+```
 
 ## Overview
 
-`s3slower` uses eBPF (extended Berkeley Packet Filter) to instrument TLS libraries at the user-space level and HTTP traffic at the syscall layer, capturing the complete lifecycle of S3 HTTP/HTTPS requests from write to first read. It provides real-time latency metrics and statistics for S3 API operations without modifying application code.
+`s3slower` uses eBPF (extended Berkeley Packet Filter) to instrument TLS libraries at the user-space level and HTTP traffic at the syscall layer, capturing the complete lifecycle of S3 HTTP/HTTPS requests from write to first read. It provides real-time latency metrics and statistics for S3 API operations.
 
 ### Key Features
 
@@ -258,7 +280,7 @@ Defaults:
 
 ## Testing
 
-A test script `s3_torture_aws.sh` is included to generate S3 traffic for testing:
+Test scripts are included to generate S3 traffic for validation:
 
 ```bash
 # Set up environment
@@ -266,27 +288,26 @@ export S3_ENDPOINT="https://s3.amazonaws.com"
 export S3_BUCKET="your-test-bucket"
 export AWS_PROFILE="your-profile"
 
-# Run test traffic generator
-./s3_torture_aws.sh
+# Run test traffic generator (in one terminal)
+./scripts/aws-s3-test.sh
 
-# In another terminal, trace the traffic
+# Trace the traffic (in another terminal)
 sudo ./s3slower.py --host-substr "s3.amazonaws.com"
 ```
 
-Additional test helpers for correlation:
-- `scripts/aws-s3-test.sh` — random AWS CLI traffic with per-op log
-- `scripts/curl-s3-test.sh` — curl against presigned URLs into bucket `s3slower-curl`
-- `scripts/mc-s3-test.sh` — MinIO `mc` client traffic into bucket `s3slower-mc`
-- `scripts/boto3-s3-test.py` — boto3 traffic over http/https into bucket `s3slower-boto3`
-- `scripts/s3slower_correlate.py` — compare ops logs vs s3slower `--log-file` output; use `--expected-target` to enforce correct auto-attach target labels
+Available test scripts:
+- `scripts/aws-s3-test.sh` — AWS CLI traffic generator with per-operation logging
+- `scripts/curl-s3-test.sh` — curl with SigV4 signing for HTTP/1.1 traffic
+- `scripts/boto3-s3-test.py` — Python boto3 traffic over HTTP/HTTPS
+- `scripts/s3slower_correlate.py` — correlate test logs with s3slower output for validation
 
 ## Limitations
 
 - Requires root privileges for eBPF
-- Supports HTTP/1.x traffic over TLS and plain TCP; HTTP/2 and other protocols are not fully supported
-- Limited to user-space TLS libraries (not kernel TLS)
-- HTTP/2 support is experimental
-- Maximum buffer sizes for request/response parsing
+- Supports HTTP/1.x traffic over TLS and plain TCP; HTTP/2 is experimental
+- Limited to user-space TLS libraries (OpenSSL, GnuTLS, NSS)
+- Known issue: Some boto3 HTTPS PUT operations with "HTTP 100 Continue" may not be captured correctly
+- Maximum buffer sizes for request/response parsing (256 bytes for headers)
 
 ## License
 
