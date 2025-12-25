@@ -241,26 +241,29 @@ func TestLogRotation(t *testing.T) {
 		defer logger.Close()
 
 		// Override max size to a very small value for testing
-		// Each log line is ~130 bytes, so 100 bytes will rotate after every write
+		// Each log line is ~130 bytes
 		logger.maxSize = 100
 
-		// Write events until rotation
-		for i := 0; i < 10; i++ {
-			evt := &event.S3Event{
-				Timestamp:    time.Now(),
-				Method:       "GET",
-				Bucket:       "bucket-name-that-is-long",
-				Endpoint:     "s3.us-west-2.amazonaws.com",
-				ResponseSize: 1024,
-				LatencyMs:    100.0,
-				Path:         "/bucket-name/some/very/long/path/to/file.json",
-			}
-			err = logger.WriteEvent(evt)
-			require.NoError(t, err)
-
-			// Small delay to ensure different timestamps for new files
-			time.Sleep(10 * time.Millisecond)
+		// Write first event to exceed maxSize
+		evt := &event.S3Event{
+			Timestamp:    time.Now(),
+			Method:       "GET",
+			Bucket:       "bucket-name-that-is-long",
+			Endpoint:     "s3.us-west-2.amazonaws.com",
+			ResponseSize: 1024,
+			LatencyMs:    100.0,
+			Path:         "/bucket-name/some/very/long/path/to/file.json",
 		}
+		err = logger.WriteEvent(evt)
+		require.NoError(t, err)
+
+		// Wait 1 second for new timestamp
+		time.Sleep(1 * time.Second)
+
+		// Write second event - this triggers rotation
+		evt.Timestamp = time.Now()
+		err = logger.WriteEvent(evt)
+		require.NoError(t, err)
 
 		logger.Sync()
 
@@ -283,11 +286,11 @@ func TestLogRotation(t *testing.T) {
 		require.NoError(t, err)
 		defer logger.Close()
 
-		// Override max size
-		logger.maxSize = 200
+		// Override max size to trigger rotation on each write
+		logger.maxSize = 100
 
-		// Write many events to trigger multiple rotations
-		for i := 0; i < 50; i++ {
+		// Write events with 1-second delays to trigger 4 rotations
+		for i := 0; i < 4; i++ {
 			evt := &event.S3Event{
 				Timestamp:    time.Now(),
 				Method:       "GET",
@@ -297,12 +300,14 @@ func TestLogRotation(t *testing.T) {
 				Path:         "/bucket/file.json",
 			}
 			_ = logger.WriteEvent(evt)
-			time.Sleep(5 * time.Millisecond)
+			if i < 3 {
+				time.Sleep(1 * time.Second)
+			}
 		}
 
 		logger.Sync()
 
-		// Should have at most maxBackups + 1 log files
+		// Should have at most maxBackups + 1 log files (2 + 1 = 3)
 		matches, err := filepath.Glob(filepath.Join(tmpDir, "test_*.log"))
 		require.NoError(t, err)
 		assert.LessOrEqual(t, len(matches), 3, "should keep only maxBackups logs")
