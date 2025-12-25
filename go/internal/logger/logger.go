@@ -79,7 +79,7 @@ func NewRotatingLogger(cfg Config) (*RotatingLogger, error) {
 
 // openNewFile opens a new log file with timestamp.
 func (l *RotatingLogger) openNewFile() error {
-	timestamp := time.Now().Format("2006-01-02_15-04-05.000")
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	filename := fmt.Sprintf("%s_%s.log", l.prefix, timestamp)
 	path := filepath.Join(l.dir, filename)
 
