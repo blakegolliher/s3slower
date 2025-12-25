@@ -209,7 +209,9 @@ func (l *RotatingLogger) Close() error {
 	defer l.mu.Unlock()
 
 	if l.currentFile != nil {
-		return l.currentFile.Close()
+		err := l.currentFile.Close()
+		l.currentFile = nil
+		return err
 	}
 	return nil
 }
