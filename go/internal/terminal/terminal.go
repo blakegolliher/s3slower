@@ -62,9 +62,9 @@ func (w *Writer) WriteHeader() {
 }
 
 func (w *Writer) writeTableHeader() {
-	fmt.Fprintf(w.out, "%-12s %-8s %-6s %-15s %-12s %-6s %8s %6s %-20s\n",
-		"TIME", "PID", "COMM", "CLIENT", "OPERATION", "STATUS", "LAT(ms)", "BYTES", "BUCKET")
-	fmt.Fprintf(w.out, "%s\n", strings.Repeat("-", 100))
+	fmt.Fprintf(w.out, "%-12s %-6s %-16s %-24s %10s %10s %-30s\n",
+		"TIME", "METHOD", "BUCKET", "ENDPOINT", "BYTES", "LAT(ms)", "KEY")
+	fmt.Fprintf(w.out, "%s\n", strings.Repeat("-", 115))
 }
 
 // WriteEvent writes a single event.
@@ -81,18 +81,25 @@ func (w *Writer) WriteEvent(e *event.S3Event) {
 
 func (w *Writer) writeTableEvent(e *event.S3Event) {
 	timeStr := e.Timestamp.Format("15:04:05.000")
-	bucket := truncate(e.Bucket, 20)
 
-	fmt.Fprintf(w.out, "%-12s %-8d %-6s %-15s %-12s %-6d %8.2f %6d %-20s\n",
+	// Extract key from path (after bucket prefix)
+	key := e.Path
+	if len(key) > 0 && key[0] == '/' {
+		key = key[1:]
+	}
+	// Remove bucket prefix if present
+	if e.Bucket != "" && strings.HasPrefix(key, e.Bucket+"/") {
+		key = key[len(e.Bucket)+1:]
+	}
+
+	fmt.Fprintf(w.out, "%-12s %-6s %-16s %-24s %10d %10.2f %-30s\n",
 		timeStr,
-		e.PID,
-		truncate(e.Comm, 6),
-		truncate(e.ClientType, 15),
-		truncate(string(e.Operation), 12),
-		e.StatusCode,
-		e.LatencyMs,
+		e.Method,
+		truncate(e.Bucket, 16),
+		truncate(e.Endpoint, 24),
 		e.ResponseSize,
-		bucket,
+		e.LatencyMs,
+		truncate(key, 30),
 	)
 }
 
