@@ -17,23 +17,48 @@ S3Slower is a production-ready tool for monitoring S3 client-side latency using 
 
 ## Quick Start
 
-### Installation
+### Prerequisites
+
+S3Slower requires BCC (BPF Compiler Collection) to be installed on your system:
 
 ```bash
-# Install from source
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install bpfcc-tools python3-bpfcc linux-headers-$(uname -r)
+
+# CentOS/RHEL/Fedora
+sudo yum install bcc-tools python3-bcc kernel-devel
+# or
+sudo dnf install bcc-tools python3-bcc kernel-devel
+```
+
+### Installation
+
+**You must install the package before using the `s3slower` command:**
+
+```bash
+# Clone and install from source
 git clone https://github.com/yourusername/s3slower.git
 cd s3slower
-pip install .
+sudo pip install .
 
 # Or install in development mode
-pip install -e .
+sudo pip install -e .
 ```
 
 ### Basic Usage
 
-Monitor all S3 operations with console output:
+After installation, monitor all S3 operations with console output:
 ```bash
 sudo s3slower -d screen
+```
+
+### Running Without Installation (Development)
+
+If you want to run directly from the source directory without installing:
+```bash
+cd s3slower
+sudo python -m s3slower.main -d screen
 ```
 
 Monitor with Prometheus export:
@@ -147,18 +172,7 @@ S3Slower automatically detects the following S3 operations:
 
 ### Installing BCC
 
-#### Ubuntu/Debian
-```bash
-sudo apt-get update
-sudo apt-get install bpfcc-tools linux-headers-$(uname -r)
-```
-
-#### CentOS/RHEL/Fedora
-```bash
-sudo yum install bcc-tools kernel-devel
-# or
-sudo dnf install bcc-tools kernel-devel
-```
+See the [Prerequisites](#prerequisites) section above for BCC installation commands.
 
 ## Deployment
 
