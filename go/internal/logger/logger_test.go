@@ -241,10 +241,11 @@ func TestLogRotation(t *testing.T) {
 		defer logger.Close()
 
 		// Override max size to a very small value for testing
-		logger.maxSize = 200 // 200 bytes
+		// Each log line is ~130 bytes, so 100 bytes will rotate after every write
+		logger.maxSize = 100
 
-		// Write events until rotation - each event is ~100+ bytes
-		for i := 0; i < 30; i++ {
+		// Write events until rotation
+		for i := 0; i < 10; i++ {
 			evt := &event.S3Event{
 				Timestamp:    time.Now(),
 				Method:       "GET",
@@ -258,7 +259,7 @@ func TestLogRotation(t *testing.T) {
 			require.NoError(t, err)
 
 			// Small delay to ensure different timestamps for new files
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 
 		logger.Sync()
