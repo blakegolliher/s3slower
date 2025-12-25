@@ -1,124 +1,183 @@
 # S3Slower - S3 Client Latency Monitor
 
-> **⚠️ Refactoring in Progress**: This project is being refactored from Python to Go. See the [Go Implementation](#go-implementation-in-progress) section below for details.
-
-S3Slower is a production-ready tool for monitoring S3 client-side latency using eBPF. It traces HTTP requests and responses from S3 clients without requiring SDK instrumentation, providing detailed metrics via Prometheus and other exporters.
+S3Slower is a production-ready tool for monitoring S3 client-side latency using eBPF. It traces HTTP requests and responses from S3 clients without requiring SDK instrumentation, providing detailed metrics via Prometheus and terminal output.
 
 ## Features
 
+- **Single static binary** - No dependencies, no runtime required
 - **eBPF-based monitoring** with minimal performance overhead
 - **No application instrumentation** required - works with any S3 client
 - **Prometheus metrics export** for integration with monitoring infrastructure
 - **S3 operation detection** - identifies GetObject, PutObject, multipart uploads, etc.
-- **Process-level monitoring** with optional PID filtering
-- **Configurable latency thresholds** to focus on slow operations
-- **Multiple output formats** (console, Prometheus)
-- **Production-ready** with proper packaging and deployment options
+- **Multiple TLS library support** - OpenSSL, GnuTLS, NSS, and plain HTTP
+- **Process watching** - Auto-attach to mc, warp, and other S3 clients
+- **RPM/DEB packaging** - Easy installation via package managers
+- **Systemd integration** - Run as a background service
 
 ## Quick Start
 
 ### Prerequisites
 
-S3Slower requires BCC (BPF Compiler Collection) to be installed on your system:
+- **Linux kernel**: 4.4+ with eBPF support
+- **Go**: 1.24+ (for building from source)
+- **Root privileges**: Required for eBPF attachment
+
+### Build from Source
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install bpfcc-tools python3-bpfcc linux-headers-$(uname -r)
-
-# CentOS/RHEL/Fedora
-sudo yum install bcc-tools python3-bcc kernel-devel
-# or
-sudo dnf install bcc-tools python3-bcc kernel-devel
+cd go
+make build
 ```
 
-### Installation
+The binary will be created at `go/build/s3slower`.
 
-**You must install the package before using the `s3slower` command:**
+### Run
 
 ```bash
-# Clone and install from source
-git clone https://github.com/yourusername/s3slower.git
-cd s3slower
-sudo pip install .
+# Run with terminal output (requires root)
+sudo ./go/build/s3slower run
 
-# Or install in development mode
-sudo pip install -e .
+# Run with Prometheus exporter on port 9000
+sudo ./go/build/s3slower run --prometheus --port 9000
+
+# Watch specific processes
+sudo ./go/build/s3slower run --watch mc,warp
+
+# Use a config file
+sudo ./go/build/s3slower run -C s3slower.yaml
+
+# Attach to a specific process
+sudo ./go/build/s3slower attach --pid 12345
 ```
 
-### Basic Usage
+### Install System-Wide
 
-After installation, monitor all S3 operations with console output:
 ```bash
-sudo s3slower -d screen
+cd go
+
+# Install to /usr/local/bin
+sudo make install
+
+# Or build and install RPM (RHEL/CentOS/Fedora)
+make rpm
+sudo rpm -i dist/s3slower-*.rpm
+
+# Or build and install DEB (Debian/Ubuntu)
+make deb
+sudo dpkg -i dist/s3slower-*.deb
 ```
 
-### Running Without Installation (Development)
-
-If you want to run directly from the source directory without installing:
+After installation, run from anywhere:
 ```bash
-cd s3slower
-sudo python -m s3slower.main -d screen
+sudo s3slower run
 ```
 
-Monitor with Prometheus export:
-```bash
-sudo s3slower -d prometheus
+## CLI Reference
+
+```
+Usage:
+  s3slower [command]
+
+Available Commands:
+  run         Run s3slower tracer
+  attach      Attach to a specific process
+  demo        Run demo mode with sample events
+  version     Print version information
+  help        Help about any command
+
+Global Flags:
+  -h, --help      help for s3slower
+  -v, --version   version for s3slower
 ```
 
-Monitor specific process with latency threshold:
+### Run Command
+
 ```bash
-sudo s3slower -d screen --pid 1234 --min-latency-ms 100
+s3slower run [flags]
 ```
 
-Use configuration file:
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-C, --config` | Path to config file | - |
+| `--prometheus` | Enable Prometheus exporter | false |
+| `-p, --port` | Prometheus exporter port | 9000 |
+| `--host` | Prometheus exporter host | "::" |
+| `--min-latency` | Minimum latency in ms to report | 0 |
+| `--watch` | Process names to watch (e.g., mc,warp) | - |
+| `--mode` | Probe mode: auto, http, openssl, gnutls, nss | auto |
+| `--debug` | Enable debug output | false |
+| `--log-dir` | Log directory | /opt/s3slower |
+| `--no-log` | Disable file logging | false |
+
+### Attach Command
+
 ```bash
-sudo s3slower -C s3slower.yaml
+s3slower attach [flags]
 ```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--pid` | Process ID to attach to | - |
+| `--mode` | Probe mode: auto, openssl, gnutls, nss, http | auto |
+| `-f, --follow` | Follow child processes | false |
+
+## eBPF Tracing Modes
+
+S3Slower supports multiple tracing modes for different TLS libraries:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `auto` | Attach all available probes | Mixed traffic (recommended) |
+| `http` | Kprobes on sys_read/sys_write | Plain HTTP traffic |
+| `openssl` | Uprobes on SSL_read/SSL_write | HTTPS via OpenSSL |
+| `gnutls` | Uprobes on gnutls_record_* | HTTPS via GnuTLS |
+| `nss` | Uprobes on PR_Read/PR_Write | HTTPS via NSS |
 
 ## Configuration
 
-### Command Line Options
-
-```bash
-s3slower --help
-```
-
-Key options:
-- `-d, --driver`: Output driver (screen, prometheus)
-- `-p, --pid`: Monitor specific process ID
-- `--min-latency-ms`: Minimum latency threshold (default: 0)
-- `-i, --interval`: Collection interval in seconds (default: 5)
-- `-C, --cfg`: Configuration file path
-- `--debug`: Enable debug logging
-
-### Configuration File
-
-Example `s3slower.yaml`:
+### Configuration File (`s3slower.yaml`)
 
 ```yaml
 # Collection settings
-interval: 5
-min_latency_ms: 0
-debug: false
-
-# Optional process filtering
-# pid: 1234
+interval: 5                    # Collection interval (seconds)
+min_latency_ms: 0             # Minimum latency to report
+debug: false                  # Debug logging
 
 # Prometheus exporter
 prometheus:
-  prom_exporter_host: "::"
-  prom_exporter_port: 9000
-  buffer_size: 1000
+  prom_exporter_host: "::"    # Listen address
+  prom_exporter_port: 9000    # Listen port
+  buffer_size: 1000           # Sample buffer size
 
-# Optional console output
-# screen:
-#   table_format: true
+# Terminal output
+screen:
+  table_format: true          # Use table format
+  max_url_length: 50          # URL truncation length
 ```
 
-## Output Formats
+### Targets Configuration (`targets.yml`)
 
-### Console Output
+```yaml
+targets:
+  - id: aws-cli
+    match:
+      type: comm              # Match by process name
+      value: aws
+    mode: openssl
+    prom_labels:
+      client: aws-cli
+      env: production
+
+  - id: mc
+    match:
+      type: exe_basename      # Match by executable name
+      value: mc
+    mode: openssl
+    prom_labels:
+      client: minio-client
+```
+
+## Terminal Output
 
 ```
 TIME     COMM         PID    S3_OPERATION     COUNT  AVG_MS   MIN_MS   MAX_MS   REQ_BYTES  RESP_BYTES
@@ -127,18 +186,20 @@ TIME     COMM         PID    S3_OPERATION     COUNT  AVG_MS   MIN_MS   MAX_MS   
 14:30:15 s3cmd        9012   UploadPart(1)    1      456.2    456.2    456.2    5242880    0
 ```
 
-### Prometheus Metrics
+## Prometheus Metrics
 
-The Prometheus driver exports the following metrics:
+When running with `--prometheus`, the following metrics are exported:
 
-- `s3slower_requests_total` - Total number of S3 requests
-- `s3slower_request_errors_total` - Total number of S3 request errors
-- `s3slower_request_duration_ms` - Average S3 request duration in milliseconds
-- `s3slower_request_duration_min_ms` - Minimum S3 request duration
-- `s3slower_request_duration_max_ms` - Maximum S3 request duration
-- `s3slower_request_bytes_total` - Total S3 request bytes
-- `s3slower_response_bytes_total` - Total S3 response bytes
-- `s3slower_partial_requests_total` - Total number of multi-part requests
+| Metric | Type | Description |
+|--------|------|-------------|
+| `s3slower_requests_total` | Counter | Total S3 requests |
+| `s3slower_request_errors_total` | Counter | Total request errors |
+| `s3slower_request_duration_ms` | Histogram | Request latency |
+| `s3slower_request_duration_min_ms` | Gauge | Minimum latency |
+| `s3slower_request_duration_max_ms` | Gauge | Maximum latency |
+| `s3slower_request_bytes_total` | Counter | Total request bytes |
+| `s3slower_response_bytes_total` | Counter | Total response bytes |
+| `s3slower_partial_requests_total` | Counter | Multipart requests |
 
 All metrics include labels:
 - `hostname` - System hostname
@@ -163,62 +224,37 @@ S3Slower automatically detects the following S3 operations:
 - **ListMultiparts** - List multipart uploads
 - **DeleteMultiple** - Batch object deletion
 
-## System Requirements
-
-- **Linux kernel** 4.4+ with eBPF support
-- **Python** 3.9+
-- **BCC** (BPF Compiler Collection) 0.25.0+
-- **Root privileges** (required for eBPF programs)
-
-### Installing BCC
-
-See the [Prerequisites](#prerequisites) section above for BCC installation commands.
-
 ## Deployment
 
 ### Systemd Service
 
-Create `/etc/systemd/system/s3slower.service`:
+After package installation, manage with systemd:
 
-```ini
-[Unit]
-Description=S3Slower - S3 Latency Monitor
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/s3slower -C /etc/s3slower/s3slower.yaml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
 ```bash
-sudo mkdir -p /etc/s3slower
-sudo cp s3slower.yaml /etc/s3slower/
-sudo systemctl enable s3slower
+# Start service
 sudo systemctl start s3slower
+
+# Enable at boot
+sudo systemctl enable s3slower
+
+# View logs
+sudo journalctl -u s3slower -f
+
+# Check status
+sudo systemctl status s3slower
 ```
 
 ### Docker
 
 ```dockerfile
-FROM ubuntu:22.04
-
-RUN apt-get update && apt-get install -y \
-    python3 python3-pip \
-    bpfcc-tools linux-headers-generic \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY . /app
+FROM golang:1.24 AS builder
 WORKDIR /app
-RUN pip3 install .
+COPY go/ .
+RUN make build
 
-CMD ["s3slower", "-C", "s3slower.yaml"]
+FROM debian:bookworm-slim
+COPY --from=builder /app/build/s3slower /usr/local/bin/
+CMD ["s3slower", "run", "--prometheus"]
 ```
 
 Run with required privileges:
@@ -257,14 +293,12 @@ spec:
       containers:
       - name: s3slower
         image: s3slower:latest
+        args: ["run", "--prometheus", "--port", "9000"]
         securityContext:
           privileged: true
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
-          readOnly: true
-        - name: usr-src
-          mountPath: /usr/src
           readOnly: true
         - name: sys-kernel
           mountPath: /sys/kernel
@@ -278,9 +312,6 @@ spec:
       - name: lib-modules
         hostPath:
           path: /lib/modules
-      - name: usr-src
-        hostPath:
-          path: /usr/src
       - name: sys-kernel
         hostPath:
           path: /sys/kernel
@@ -325,7 +356,6 @@ groups:
       severity: warning
     annotations:
       summary: "High S3 latency detected"
-      description: "{{ $labels.comm }} on {{ $labels.hostname }} has S3 {{ $labels.s3_operation }} latency of {{ $value }}ms"
 
   - alert: S3HighErrorRate
     expr: rate(s3slower_request_errors_total[5m]) > 0.1
@@ -334,156 +364,47 @@ groups:
       severity: critical
     annotations:
       summary: "High S3 error rate detected"
-      description: "{{ $labels.comm }} on {{ $labels.hostname }} has S3 error rate of {{ $value }}/sec"
 ```
 
-## Troubleshooting
+## Development
 
-### Common Issues
-
-1. **Permission denied**: Ensure running as root or with proper capabilities
-2. **BPF program load failed**: Check kernel version and BCC installation
-3. **No events captured**: Verify S3 traffic is using HTTP (not just HTTPS headers)
-4. **High CPU usage**: Increase `--min-latency-ms` to filter noise
-
-### Debug Mode
-
-Enable debug logging:
-```bash
-sudo s3slower -d screen --debug
-```
-
-View eBPF program:
-```bash
-s3slower --ebpf
-```
-
-## Performance Impact
-
-S3Slower is designed for production use with minimal overhead:
-
-- **CPU impact**: <1% additional CPU usage under normal load
-- **Memory usage**: ~10-50MB depending on traffic volume
-- **Network overhead**: None (passive monitoring)
-- **Storage overhead**: Configurable buffer sizes
-
-## Architecture
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   S3 Client     │    │    eBPF         │    │   S3Slower      │
-│   Application   │────│   Kernel        │────│   Userspace     │
-│                 │    │   Probes        │    │   Aggregator    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                       │
-                              ┌────────────────────────┼────────────────────────┐
-                              │                        │                        │
-                    ┌─────────▼─────────┐    ┌─────────▼─────────┐    ┌─────────▼─────────┐
-                    │   Screen Driver   │    │ Prometheus Driver │    │  Future Drivers   │
-                    │   (Console)       │    │   (HTTP Server)   │    │  (Kafka, etc.)    │
-                    └───────────────────┘    └───────────────────┘    └───────────────────┘
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
-
-### Development Setup
+### Build Commands
 
 ```bash
-git clone https://github.com/yourusername/s3slower.git
-cd s3slower
-pip install -e .[test]
-pytest
-```
-
-## License
-
-Apache License 2.0 - see LICENSE file for details.
-
-## Support
-
-- GitHub Issues: Report bugs and feature requests
-- Documentation: See docs/ directory for detailed guides
-- Examples: Check examples/ directory for usage patterns
-
-## Comparison with Other Tools
-
-| Tool | Approach | Pros | Cons |
-|------|----------|------|------|
-| S3Slower | eBPF | No instrumentation, minimal overhead | Requires root, Linux only |
-| AWS X-Ray | SDK tracing | Rich details, cloud integration | Requires code changes |
-| tcpdump | Packet capture | Universal | Manual analysis needed |
-| Application logs | Custom logging | Application context | Requires code changes |
-
-## Go Implementation (In Progress)
-
-We are actively refactoring S3Slower from Python to Go to provide:
-
-- **Single static binary** - No Python runtime or dependencies needed
-- **Easy RPM/DEB packaging** - Simple installation via package managers
-- **Lower memory footprint** - Reduced resource consumption
-- **Faster startup** - No interpreter overhead
-- **Native eBPF support** - Using cilium/ebpf library
-
-### Current Status
-
-| Component | Python | Go | Status |
-|-----------|--------|-----|--------|
-| Config loading | ✅ | ✅ | Complete |
-| HTTP parsing | ✅ | ✅ | Complete |
-| Process watcher | ✅ | ✅ | Complete |
-| Event processing | ✅ | ✅ | Complete |
-| Prometheus metrics | ✅ | ✅ | Complete |
-| Terminal output | ✅ | ✅ | Complete |
-| eBPF loader | ✅ (BCC) | ✅ (cilium/ebpf) | Complete |
-| CLI commands | ✅ | ✅ | Complete |
-| RPM packaging | ❌ | ✅ | Complete |
-
-### eBPF Tracing Modes
-
-The Go implementation supports multiple tracing modes:
-
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `http` | Kprobes on sys_read/sys_write | Plain HTTP traffic |
-| `openssl` | Uprobes on SSL_read/SSL_write | HTTPS via OpenSSL |
-| `gnutls` | Uprobes on gnutls_record_* | HTTPS via GnuTLS |
-| `nss` | Uprobes on PR_Read/PR_Write | HTTPS via NSS |
-| `auto` | Attach all available probes | Mixed traffic |
-
-### Test Coverage
-
-- **Python tests**: 340 passing tests
-- **Go tests**: 441 passing tests
-
-### Try the Go Version
-
-```bash
-# Build from source
 cd go
+
+# Build binary
 make build
 
 # Run tests
 make test
 
-# Generate BPF program (requires clang, bpftool)
-make generate
+# Run tests with coverage
+make test-cover
 
-# Build RPM package
-make rpm
+# Format code
+make fmt
+
+# Run linter
+make lint
+
+# Full development workflow
+make dev
+
+# CI pipeline
+make ci
+
+# Clean build artifacts
+make clean
 ```
 
-### Go Project Structure
+### Project Structure
 
 ```
 go/
 ├── cmd/s3slower/          # Main entry point
 ├── internal/
-│   ├── cmd/               # CLI commands
+│   ├── cmd/               # CLI commands (cobra)
 │   ├── config/            # YAML configuration
 │   ├── ebpf/              # eBPF loader (cilium/ebpf)
 │   │   ├── bpf/           # BPF C source code
@@ -501,4 +422,45 @@ go/
 └── README.md              # Go-specific docs
 ```
 
-For more details, see [go/README.md](go/README.md). 
+## Performance Impact
+
+S3Slower is designed for production use with minimal overhead:
+
+- **CPU impact**: <1% additional CPU usage under normal load
+- **Memory usage**: ~10-50MB depending on traffic volume
+- **Network overhead**: None (passive monitoring)
+- **Storage overhead**: Configurable buffer sizes
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Permission denied**: Ensure running as root or with `CAP_BPF` capability
+2. **BPF program load failed**: Check kernel version (4.4+ required)
+3. **No events captured**: Verify S3 traffic exists and TLS library is detected
+4. **High CPU usage**: Increase `--min-latency` to filter noise
+
+### Debug Mode
+
+Enable debug logging:
+```bash
+sudo s3slower run --debug
+```
+
+See [LINUX_TROUBLESHOOTING.md](LINUX_TROUBLESHOOTING.md) for detailed troubleshooting.
+
+## Legacy Python Version
+
+The original Python implementation is still available but no longer maintained. See [LEGACY_README.md](LEGACY_README.md) for Python-specific documentation.
+
+## License
+
+Apache License 2.0 - see LICENSE file for details.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Run `make ci` to verify
+5. Submit a pull request
