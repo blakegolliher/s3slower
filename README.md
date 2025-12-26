@@ -81,7 +81,6 @@ Usage:
 Available Commands:
   run         Run s3slower tracer
   attach      Attach to a specific process
-  demo        Run demo mode with sample events
   version     Print version information
   help        Help about any command
 
@@ -106,7 +105,8 @@ s3slower run [flags]
 | `--watch` | Process names to watch (e.g., mc,warp) | - |
 | `--mode` | Probe mode: auto, http, openssl, gnutls, nss | auto |
 | `--debug` | Enable debug output | false |
-| `--log-dir` | Log directory | /opt/s3slower |
+| `--log-dir` | Log directory | /var/log/s3slower |
+| `--log-max-size` | Max log size in MB before rotation | 100 |
 | `--no-log` | Disable file logging | false |
 
 ### Attach Command
@@ -119,7 +119,9 @@ s3slower attach [flags]
 |------|-------------|---------|
 | `--pid` | Process ID to attach to | - |
 | `--mode` | Probe mode: auto, openssl, gnutls, nss, http | auto |
-| `-f, --follow` | Follow child processes | false |
+| `--min-latency` | Minimum latency in ms to report | 0 |
+| `--log-dir` | Log directory | /var/log/s3slower |
+| `--no-log` | Disable file logging | false |
 
 ## eBPF Tracing Modes
 
@@ -180,10 +182,11 @@ targets:
 ## Terminal Output
 
 ```
-TIME     COMM         PID    S3_OPERATION     COUNT  AVG_MS   MIN_MS   MAX_MS   REQ_BYTES  RESP_BYTES
-14:30:15 aws-cli      1234   GetObject        3      125.3    45.2     234.1    512        1048576
-14:30:15 boto3-app    5678   PutObject        1      89.7     89.7     89.7     1024       0
-14:30:15 s3cmd        9012   UploadPart(1)    1      456.2    456.2    456.2    5242880    0
+TIME         METHOD BUCKET           ENDPOINT                      BYTES    LAT(ms) KEY
+---------------------------------------------------------------------------------------------------------------
+14:30:15.123 GET    my-bucket        s3.amazonaws.com            1048576      45.20 data/file1.json
+14:30:16.456 PUT    backup-bucket    s3.us-west-2.amazonaws.com        0     123.50 archive/backup.tar.gz
+14:30:17.789 GET    logs             minio.local:9000              4096      12.30 app/2024-01-15/app.log
 ```
 
 ## Prometheus Metrics
