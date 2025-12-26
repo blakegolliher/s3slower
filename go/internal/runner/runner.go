@@ -252,10 +252,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		BufferSize:   1000,
 	}
 
-	// Create pipeline (use mock for now since BPF isn't compiled)
-	pipeline, err := ebpf.NewPipelineWithMock(pipelineCfg)
+	// Try to create real BPF pipeline, fall back to mock if not available
+	pipeline, err := ebpf.NewPipeline(pipelineCfg)
 	if err != nil {
-		return fmt.Errorf("failed to create pipeline: %w", err)
+		// Fall back to mock tracer (useful for development/testing without root)
+		if r.config.Debug {
+			fmt.Printf("BPF tracer unavailable (%v), using mock tracer\n", err)
+		}
+		pipeline, err = ebpf.NewPipelineWithMock(pipelineCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create pipeline: %w", err)
+		}
 	}
 	r.pipeline = pipeline
 
