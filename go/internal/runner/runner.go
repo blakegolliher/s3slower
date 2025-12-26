@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
+	"github.com/s3slower/s3slower/internal/config"
 	"github.com/s3slower/s3slower/internal/ebpf"
 	"github.com/s3slower/s3slower/internal/event"
 	"github.com/s3slower/s3slower/internal/logger"
 	"github.com/s3slower/s3slower/internal/metrics"
 	"github.com/s3slower/s3slower/internal/terminal"
+	"github.com/s3slower/s3slower/internal/watcher"
 )
 
 // Config holds runner configuration.
@@ -36,6 +39,10 @@ type Config struct {
 	// Watch settings
 	WatchProcesses []string
 
+	// Config file paths for hot-reload
+	ConfigPath  string
+	TargetsPath string
+
 	// Debug
 	Debug bool
 }
@@ -56,18 +63,26 @@ func DefaultConfig() Config {
 
 // Runner manages the s3slower execution.
 type Runner struct {
-	config   Config
-	pipeline *ebpf.Pipeline
-	terminal *terminal.Writer
-	logger   *logger.RotatingLogger
-	exporter *metrics.Exporter
-	metrics  *metrics.Metrics
+	config          Config
+	pipeline        *ebpf.Pipeline
+	terminal        *terminal.Writer
+	logger          *logger.RotatingLogger
+	exporter        *metrics.Exporter
+	metrics         *metrics.Metrics
+	configWatcher   *config.ConfigWatcher
+	targetWatcher   *watcher.TargetWatcher
+
+	// Mutex for config updates
+	mu           sync.RWMutex
+	targets      []config.TargetConfig
+	minLatencyMs uint64
 }
 
 // New creates a new runner.
 func New(cfg Config) (*Runner, error) {
 	r := &Runner{
-		config: cfg,
+		config:       cfg,
+		minLatencyMs: cfg.MinLatencyMs,
 	}
 
 	// Set up terminal output
@@ -99,11 +114,120 @@ func New(cfg Config) (*Runner, error) {
 		r.metrics = r.exporter.Metrics()
 	}
 
+	// Set up config watcher for hot-reload
+	if cfg.ConfigPath != "" || cfg.TargetsPath != "" {
+		cw, err := config.NewConfigWatcher(cfg.ConfigPath, cfg.TargetsPath)
+		if err != nil {
+			// Non-fatal: warn and continue without hot-reload
+			fmt.Fprintf(os.Stderr, "Warning: failed to create config watcher: %v\n", err)
+		} else {
+			r.configWatcher = cw
+
+			// Set up callbacks
+			cw.OnAppConfigChange(r.handleAppConfigChange)
+			cw.OnTargetsChange(r.handleTargetsChange)
+
+			// Load initial targets
+			if targets := cw.Targets(); targets != nil {
+				r.targets = targets
+			}
+		}
+	}
+
+	// Set up target watcher for process monitoring
+	if len(r.targets) > 0 {
+		r.targetWatcher = watcher.NewTargetWatcher(r.targets, r.onProcessAttach)
+	}
+
 	return r, nil
+}
+
+// onProcessAttach is called when a matching process is found.
+func (r *Runner) onProcessAttach(pid int, comm string, target *config.TargetConfig) {
+	fmt.Printf("Detected S3 client: %s (PID %d, target: %s, mode: %s)\n",
+		comm, pid, target.ID, target.Mode)
+
+	// TODO: Attach eBPF probes to this process
+	// This will be implemented when we switch to the real tracer
+}
+
+// handleAppConfigChange is called when the app config file changes.
+func (r *Runner) handleAppConfigChange(cfg *config.AppConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Update min latency (can be changed at runtime)
+	if cfg.MinLatencyMs > 0 {
+		r.minLatencyMs = uint64(cfg.MinLatencyMs)
+		fmt.Printf("Updated min latency to %dms\n", cfg.MinLatencyMs)
+	}
+
+	// Debug mode change
+	if cfg.Debug != r.config.Debug {
+		r.config.Debug = cfg.Debug
+		fmt.Printf("Debug mode: %v\n", cfg.Debug)
+	}
+}
+
+// handleTargetsChange is called when the targets config file changes.
+func (r *Runner) handleTargetsChange(targets []config.TargetConfig) {
+	r.mu.Lock()
+	r.targets = targets
+	tw := r.targetWatcher
+	r.mu.Unlock()
+
+	fmt.Printf("Updated targets: %d configured\n", len(targets))
+
+	// Print target IDs for visibility
+	for _, t := range targets {
+		fmt.Printf("  - %s (match: %s=%s, mode: %s)\n",
+			t.ID, t.MatchType, t.MatchValue, t.Mode)
+	}
+
+	// Update the target watcher with new targets
+	if tw != nil {
+		tw.UpdateTargets(targets)
+	} else if len(targets) > 0 {
+		// Create a new target watcher if we didn't have one
+		r.mu.Lock()
+		r.targetWatcher = watcher.NewTargetWatcher(targets, r.onProcessAttach)
+		r.targetWatcher.Start()
+		r.mu.Unlock()
+	}
+}
+
+// Targets returns the current target configurations.
+func (r *Runner) Targets() []config.TargetConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.targets
+}
+
+// MinLatencyMs returns the current minimum latency filter.
+func (r *Runner) MinLatencyMs() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.minLatencyMs
 }
 
 // Run starts the tracer and runs until interrupted.
 func (r *Runner) Run(ctx context.Context) error {
+	// Start config watcher for hot-reload
+	if r.configWatcher != nil {
+		r.configWatcher.Start()
+		defer r.configWatcher.Stop()
+	}
+
+	// Start target watcher for process detection
+	if r.targetWatcher != nil {
+		if err := r.targetWatcher.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to start target watcher: %v\n", err)
+		} else {
+			defer r.targetWatcher.Stop()
+			fmt.Printf("Watching for %d target processes\n", len(r.targets))
+		}
+	}
+
 	// Convert mode string to ProbeMode
 	mode := ebpf.ProbeModeAuto
 	switch r.config.Mode {
@@ -194,6 +318,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // handleEvent processes a single event.
 func (r *Runner) handleEvent(evt *event.S3Event) {
+	// Check against current min latency filter (from hot-reload)
+	minLatency := r.MinLatencyMs()
+	if minLatency > 0 && evt.LatencyMs < float64(minLatency) {
+		return // Skip events below the threshold
+	}
+
 	// Write to terminal
 	if r.terminal != nil {
 		r.terminal.WriteEvent(evt)
@@ -238,6 +368,12 @@ func (r *Runner) startPrometheusServer() {
 
 // Close cleans up resources.
 func (r *Runner) Close() error {
+	if r.targetWatcher != nil {
+		r.targetWatcher.Stop()
+	}
+	if r.configWatcher != nil {
+		r.configWatcher.Stop()
+	}
 	if r.pipeline != nil {
 		r.pipeline.Stop()
 	}

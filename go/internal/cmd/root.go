@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/s3slower/s3slower/internal/config"
 	"github.com/s3slower/s3slower/internal/runner"
 )
 
@@ -58,6 +59,7 @@ func newVersionCommand(version, commit, buildDate string) *cobra.Command {
 func newRunCommand() *cobra.Command {
 	var (
 		configFile   string
+		targetsFile  string
 		prometheus   bool
 		port         int
 		host         string
@@ -83,27 +85,71 @@ to enable metrics collection.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := runner.DefaultConfig()
 
-			// Apply flags
-			cfg.Mode = mode
-			cfg.MinLatencyMs = minLatency
-			cfg.EnablePrometheus = prometheus
-			cfg.PrometheusPort = port
-			cfg.PrometheusHost = host
-			cfg.WatchProcesses = watchProcs
-			cfg.Debug = debug
+			// Load config file if provided
+			if configFile != "" {
+				appCfg, err := config.LoadAppConfig(configFile)
+				if err != nil {
+					return fmt.Errorf("failed to load config: %w", err)
+				}
+
+				// Apply config file settings (can be overridden by CLI flags)
+				if appCfg.MinLatencyMs > 0 {
+					cfg.MinLatencyMs = uint64(appCfg.MinLatencyMs)
+				}
+				if appCfg.PID > 0 {
+					cfg.TargetPID = uint32(appCfg.PID)
+				}
+				cfg.Debug = appCfg.Debug
+
+				// Prometheus settings from config
+				if appCfg.Prometheus.Port > 0 {
+					cfg.PrometheusPort = appCfg.Prometheus.Port
+					cfg.EnablePrometheus = true
+				}
+				if appCfg.Prometheus.Host != "" {
+					cfg.PrometheusHost = appCfg.Prometheus.Host
+				}
+			}
+
+			// Apply CLI flags (override config file)
+			if cmd.Flags().Changed("mode") {
+				cfg.Mode = mode
+			}
+			if cmd.Flags().Changed("min-latency") {
+				cfg.MinLatencyMs = minLatency
+			}
+			if cmd.Flags().Changed("prometheus") {
+				cfg.EnablePrometheus = prometheus
+			}
+			if cmd.Flags().Changed("port") {
+				cfg.PrometheusPort = port
+			}
+			if cmd.Flags().Changed("host") {
+				cfg.PrometheusHost = host
+			}
+			if cmd.Flags().Changed("watch") {
+				cfg.WatchProcesses = watchProcs
+			}
+			if cmd.Flags().Changed("debug") {
+				cfg.Debug = debug
+			}
 
 			// Logging settings
 			if noLog {
 				cfg.EnableLogging = false
 			} else {
 				cfg.EnableLogging = true
-				if logDir != "" {
+				if cmd.Flags().Changed("log-dir") {
 					cfg.LogDir = logDir
 				}
-				if logMaxSizeMB > 0 {
+				if cmd.Flags().Changed("log-max-size") {
 					cfg.LogMaxSizeMB = logMaxSizeMB
 				}
 			}
+
+			// Set config paths for hot-reload
+			cfg.ConfigPath = configFile
+			cfg.TargetsPath = targetsFile
 
 			// Create and run
 			r, err := runner.New(cfg)
@@ -118,6 +164,7 @@ to enable metrics collection.`,
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "C", "", "Path to config file")
+	cmd.Flags().StringVarP(&targetsFile, "targets", "T", "", "Path to targets file (hot-reloaded)")
 	cmd.Flags().BoolVar(&prometheus, "prometheus", false, "Enable Prometheus exporter")
 	cmd.Flags().IntVarP(&port, "port", "p", 9000, "Prometheus exporter port")
 	cmd.Flags().StringVar(&host, "host", "::", "Prometheus exporter host")
