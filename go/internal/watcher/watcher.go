@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/s3slower/s3slower/internal/config"
 )
@@ -104,15 +106,76 @@ func NewTargetWatcher(targets []config.TargetConfig, callback AttachCallback) *T
 // Start begins watching for matching processes.
 func (w *TargetWatcher) Start() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	if w.running {
+		w.mu.Unlock()
 		return nil
 	}
 
 	w.running = true
-	// TODO: Start eBPF-based exec watcher
+	w.stopCh = make(chan struct{})
+	w.mu.Unlock()
+
+	// Do an initial scan
+	w.scanProcesses()
+
+	// Start background scanner
+	go w.runScanner()
+
 	return nil
+}
+
+// runScanner periodically scans /proc for new processes.
+func (w *TargetWatcher) runScanner() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		case <-ticker.C:
+			w.scanProcesses()
+		}
+	}
+}
+
+// scanProcesses scans /proc for processes matching targets.
+func (w *TargetWatcher) scanProcesses() {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		// Check if directory name is a PID (numeric)
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+
+		// Read comm (process name)
+		comm, err := w.readComm(pid)
+		if err != nil {
+			continue
+		}
+
+		// Check if this process matches any target
+		w.OnExec(pid, comm)
+	}
+}
+
+// readComm reads the comm (process name) for a PID.
+func (w *TargetWatcher) readComm(pid int) (string, error) {
+	commPath := fmt.Sprintf("/proc/%d/comm", pid)
+	data, err := os.ReadFile(commPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // Stop stops the watcher.
@@ -168,6 +231,34 @@ func (w *TargetWatcher) GetAttached() map[int]bool {
 		result[k] = v
 	}
 	return result
+}
+
+// UpdateTargets updates the target configurations (for hot-reload).
+func (w *TargetWatcher) UpdateTargets(targets []config.TargetConfig) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.targets = targets
+}
+
+// CleanupExited removes PIDs that no longer exist.
+func (w *TargetWatcher) CleanupExited() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for pid := range w.attached {
+		// Check if process still exists
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); os.IsNotExist(err) {
+			delete(w.attached, pid)
+		}
+	}
+}
+
+// DetachCallback is called when a process exits.
+type DetachCallback func(pid int)
+
+// SetDetachCallback sets a callback for when processes exit.
+func (w *TargetWatcher) SetDetachCallback(callback DetachCallback) {
+	// Could be implemented if needed for cleanup
 }
 
 // KnownS3Clients lists known S3 client process names.
