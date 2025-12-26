@@ -73,26 +73,36 @@ go/
 │   ├── config/            # Configuration loading
 │   │   ├── config.go
 │   │   └── config_test.go
-│   ├── http/              # HTTP parsing
-│   │   ├── parser.go
-│   │   └── parser_test.go
-│   ├── watcher/           # Process watching
-│   │   ├── watcher.go
-│   │   └── watcher_test.go
+│   ├── ebpf/              # eBPF loader (cilium/ebpf)
+│   │   ├── bpf/           # BPF C source code
+│   │   ├── tracer.go      # BPF program management
+│   │   ├── library.go     # TLS library detection
+│   │   ├── pipeline.go    # Event processing pipeline
+│   │   └── *_test.go
 │   ├── event/             # Event processing
 │   │   ├── event.go
 │   │   └── event_test.go
+│   ├── http/              # HTTP parsing
+│   │   ├── parser.go
+│   │   └── parser_test.go
+│   ├── logger/            # Rotating file logger
+│   │   ├── logger.go
+│   │   └── logger_test.go
 │   ├── metrics/           # Prometheus metrics
 │   │   ├── metrics.go
 │   │   └── metrics_test.go
+│   ├── runner/            # Main execution loop
+│   │   ├── runner.go
+│   │   └── runner_test.go
 │   ├── terminal/          # Terminal output
 │   │   ├── terminal.go
 │   │   └── terminal_test.go
-│   └── utils/             # Utility functions
-│       ├── utils.go
-│       └── utils_test.go
-├── systemd/
-│   └── s3slower.service   # Systemd service file
+│   ├── utils/             # Utility functions
+│   │   ├── utils.go
+│   │   └── utils_test.go
+│   └── watcher/           # Process watching
+│       ├── watcher.go
+│       └── watcher_test.go
 ├── go.mod
 ├── go.sum
 ├── Makefile
@@ -102,17 +112,20 @@ go/
 
 ## Test Coverage
 
-The Go implementation includes comprehensive tests ported from the Python version:
+The Go implementation includes comprehensive tests (498 total):
 
-| Package | Tests | Description |
-|---------|-------|-------------|
-| config | 25+ | YAML loading, validation, target matching |
-| http | 50+ | HTTP parsing, bucket/endpoint extraction |
-| watcher | 20+ | Process classification, PID watching |
-| event | 25+ | Event processing, request correlation |
-| metrics | 15+ | Prometheus metrics, sample buffering |
-| terminal | 20+ | Output formatting, color codes |
-| utils | 30+ | Utility functions, file operations |
+| Package | Tests | Coverage | Description |
+|---------|-------|----------|-------------|
+| config | 37 | 92% | YAML loading, validation, target matching |
+| ebpf | 116 | 52% | eBPF loader, tracer, pipeline, library detection |
+| event | 38 | 94% | Event processing, request correlation |
+| http | 78 | 91% | HTTP parsing, bucket/endpoint extraction |
+| logger | 27 | 87% | Rotating file logger, size-based rotation |
+| metrics | 20 | 86% | Prometheus metrics, sample buffering |
+| runner | 30 | 44% | Main execution loop, event handling |
+| terminal | 59 | 95% | Output formatting, color codes |
+| utils | 42 | 92% | Utility functions, file operations |
+| watcher | 51 | 95% | Process classification, PID watching |
 
 Run tests:
 
@@ -202,15 +215,20 @@ Run Flags:
       --prometheus         Enable Prometheus exporter
   -p, --port int           Prometheus exporter port (default 9000)
       --host string        Prometheus exporter host (default "::")
-      --min-latency string Minimum latency to report (default "0")
-  -i, --interval int       Collection interval in seconds (default 5)
+      --min-latency uint   Minimum latency in ms to report (default 0)
       --watch strings      Process names to watch (e.g., mc,warp)
+      --mode string        Probe mode: auto, http, openssl, gnutls, nss (default "auto")
       --debug              Enable debug output
+      --log-dir string     Log directory (default "/var/log/s3slower")
+      --log-max-size int   Max log size in MB before rotation (default 100)
+      --no-log             Disable file logging
 
 Attach Flags:
-      --pid int        Process ID to attach to
-      --mode string    Probe mode: auto, openssl, gnutls, nss, http (default "auto")
-  -f, --follow         Follow child processes
+      --pid int            Process ID to attach to
+      --mode string        Probe mode: auto, openssl, gnutls, nss, http (default "auto")
+      --min-latency uint   Minimum latency in ms to report (default 0)
+      --log-dir string     Log directory (default "/var/log/s3slower")
+      --no-log             Disable file logging
 ```
 
 ## Building Packages
@@ -275,7 +293,7 @@ When running with `--prometheus`, the following metrics are exported:
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.24+
 - Linux kernel 4.4+ with eBPF support
 - Root access (for eBPF attachment)
 
