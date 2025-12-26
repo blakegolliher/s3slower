@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/s3slower/s3slower/internal/ebpf"
 	"github.com/s3slower/s3slower/internal/event"
@@ -47,7 +46,7 @@ func DefaultConfig() Config {
 		Mode:             "auto",
 		EnableTerminal:   true,
 		EnableLogging:    true,
-		LogDir:           "/opt/s3slower",
+		LogDir:           "/var/log/s3slower",
 		LogMaxSizeMB:     100,
 		LogMaxBackups:    5,
 		PrometheusPort:   9000,
@@ -249,52 +248,3 @@ func (r *Runner) Close() error {
 	return nil
 }
 
-// RunDemo runs a demo mode that generates sample events.
-func (r *Runner) RunDemo(ctx context.Context) error {
-	fmt.Println("s3slower demo mode")
-	fmt.Println("Generating sample events...")
-	fmt.Println()
-
-	// Write header
-	if r.terminal != nil {
-		r.terminal.WriteHeader()
-	}
-	if r.logger != nil {
-		r.logger.WriteHeader()
-	}
-
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	// Sample events
-	sampleEvents := []event.S3Event{
-		{Timestamp: time.Now(), Method: "GET", Bucket: "my-bucket", Endpoint: "s3.amazonaws.com", ResponseSize: 1048576, LatencyMs: 45.2, Path: "/my-bucket/data/file1.json"},
-		{Timestamp: time.Now(), Method: "PUT", Bucket: "backup-bucket", Endpoint: "s3.us-west-2.amazonaws.com", ResponseSize: 0, LatencyMs: 123.5, Path: "/backup-bucket/archive/2024/backup.tar.gz"},
-		{Timestamp: time.Now(), Method: "GET", Bucket: "logs", Endpoint: "minio.local:9000", ResponseSize: 4096, LatencyMs: 12.3, Path: "/logs/app/2024-01-15/app.log"},
-		{Timestamp: time.Now(), Method: "DELETE", Bucket: "temp", Endpoint: "s3.amazonaws.com", ResponseSize: 0, LatencyMs: 89.1, Path: "/temp/scratch/old-file.txt"},
-		{Timestamp: time.Now(), Method: "HEAD", Bucket: "assets", Endpoint: "cdn.example.com", ResponseSize: 0, LatencyMs: 5.7, Path: "/assets/images/logo.png"},
-	}
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	idx := 0
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nDemo complete.")
-			return nil
-
-		case <-sigCh:
-			fmt.Println("\nDemo interrupted.")
-			return nil
-
-		case <-ticker.C:
-			evt := sampleEvents[idx%len(sampleEvents)]
-			evt.Timestamp = time.Now()
-			r.handleEvent(&evt)
-			idx++
-		}
-	}
-}
