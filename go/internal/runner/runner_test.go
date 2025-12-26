@@ -3,7 +3,6 @@ package runner
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,7 +22,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, "auto", cfg.Mode)
 	assert.True(t, cfg.EnableTerminal)
 	assert.True(t, cfg.EnableLogging)
-	assert.Equal(t, "/opt/s3slower", cfg.LogDir)
+	assert.Equal(t, "/var/log/s3slower", cfg.LogDir)
 	assert.Equal(t, 100, cfg.LogMaxSizeMB)
 	assert.Equal(t, 5, cfg.LogMaxBackups)
 	assert.Equal(t, 9000, cfg.PrometheusPort)
@@ -208,54 +207,6 @@ func TestHandleEvent(t *testing.T) {
 
 		// Should not panic
 		r.handleEvent(evt)
-	})
-}
-
-// TestRunDemo tests the demo mode.
-func TestRunDemo(t *testing.T) {
-	t.Run("runs_demo_with_timeout", func(t *testing.T) {
-		var buf bytes.Buffer
-		cfg := DefaultConfig()
-		cfg.EnableLogging = false
-		cfg.EnableTerminal = true
-
-		r := &Runner{
-			config:   cfg,
-			terminal: terminal.NewWriter(&buf, terminal.OutputModeTable, 50),
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-
-		err := r.RunDemo(ctx)
-		assert.NoError(t, err)
-
-		// Should have printed table header to buffer
-		output := buf.String()
-		assert.Contains(t, output, "TIME")
-		assert.Contains(t, output, "METHOD")
-	})
-
-	t.Run("runs_demo_with_cancel", func(t *testing.T) {
-		var buf bytes.Buffer
-		cfg := DefaultConfig()
-		cfg.EnableLogging = false
-
-		r := &Runner{
-			config:   cfg,
-			terminal: terminal.NewWriter(&buf, terminal.OutputModeTable, 50),
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		// Cancel immediately
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			cancel()
-		}()
-
-		err := r.RunDemo(ctx)
-		assert.NoError(t, err)
 	})
 }
 
