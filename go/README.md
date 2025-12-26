@@ -194,6 +194,25 @@ targets:
       client: minio-client
 ```
 
+### Hot-Reload
+
+Both configuration files support hot-reloading. When a file is modified:
+
+- **s3slower.yaml changes**: Updates min_latency_ms and debug settings in real-time
+- **targets.yml changes**: Adds/removes target process patterns immediately
+
+This allows you to add new S3 clients to monitor or adjust thresholds without restarting the service.
+
+```bash
+# Example: Add a new target while running
+echo "  - id: myapp
+    match:
+      type: comm
+      value: myapp
+    mode: openssl" >> /etc/s3slower/targets.yml
+# s3slower will detect the change and start watching for myapp processes
+```
+
 ## CLI Reference
 
 ```
@@ -211,7 +230,8 @@ Flags:
   -v, --version   version for s3slower
 
 Run Flags:
-  -C, --config string      Path to config file
+  -C, --config string      Path to config file (hot-reloaded on change)
+  -T, --targets string     Path to targets file (hot-reloaded on change)
       --prometheus         Enable Prometheus exporter
   -p, --port int           Prometheus exporter port (default 9000)
       --host string        Prometheus exporter host (default "::")
