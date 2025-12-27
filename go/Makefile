@@ -96,14 +96,21 @@ tidy:
 deps:
 	go mod download
 
-# Generate BPF program (requires clang, libbpf-dev)
+# Generate BPF program (requires clang, kernel-devel)
+# Uses libbpf headers from kernel source when libbpf-devel is not installed
+# First tries running kernel, then falls back to any available kernel-devel
+KERNEL_VERSION := $(shell uname -r)
+KERNEL_SRC := $(shell if [ -d /usr/src/kernels/$(KERNEL_VERSION) ]; then echo /usr/src/kernels/$(KERNEL_VERSION); else ls -d /usr/src/kernels/* 2>/dev/null | head -1; fi)
+LIBBPF_INCLUDE := -I$(KERNEL_SRC)/tools/lib/bpf -I$(KERNEL_SRC)/tools/bpf/resolve_btfids/libbpf/include
+
 .PHONY: generate
 generate:
 	@echo "Generating BPF program..."
 	@which bpftool > /dev/null || (echo "bpftool required for vmlinux.h generation" && exit 1)
 	@which clang > /dev/null || (echo "clang required for BPF compilation" && exit 1)
 	@[ -f internal/ebpf/bpf/vmlinux.h ] || bpftool btf dump file /sys/kernel/btf/vmlinux format c > internal/ebpf/bpf/vmlinux.h
-	go generate ./internal/ebpf/...
+	@echo "Using libbpf headers from: $(KERNEL_SRC)"
+	cd internal/ebpf && GOPACKAGE=ebpf go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86" -target amd64 bpf bpf/s3slower.c -- $(LIBBPF_INCLUDE) -Ibpf
 
 # Build RPM package using nfpm
 .PHONY: rpm
