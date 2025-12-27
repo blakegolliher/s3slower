@@ -127,7 +127,8 @@ func ParseBucketEndpoint(host, path string) (bucket, endpoint string) {
 
 	// Virtual-host-style: bucket.s3.amazonaws.com or bucket.endpoint
 	// Only used when path doesn't contain a bucket
-	if strings.Contains(host, ".") {
+	// Skip if host is an IP address
+	if strings.Contains(host, ".") && !isIPAddress(host) {
 		parts := strings.SplitN(host, ".", 2)
 		if len(parts) == 2 {
 			return parts[0], parts[1]
@@ -135,6 +136,29 @@ func ParseBucketEndpoint(host, path string) (bucket, endpoint string) {
 	}
 
 	return "", host
+}
+
+// isIPAddress checks if the given string is an IPv4 address.
+func isIPAddress(s string) bool {
+	// Remove port if present
+	if idx := strings.LastIndex(s, ":"); idx != -1 {
+		s = s[:idx]
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // HTTPMethod represents an HTTP method.

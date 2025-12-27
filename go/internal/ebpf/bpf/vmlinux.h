@@ -96,14 +96,6 @@ struct pt_regs {
     unsigned long ss;
 };
 
-// x86_64 syscall argument access
-#define PT_REGS_PARM1(x) ((x)->di)
-#define PT_REGS_PARM2(x) ((x)->si)
-#define PT_REGS_PARM3(x) ((x)->dx)
-#define PT_REGS_PARM4(x) ((x)->r10)
-#define PT_REGS_PARM5(x) ((x)->r8)
-#define PT_REGS_RC(x) ((x)->ax)
-#define PT_REGS_SP(x) ((x)->sp)
-#define PT_REGS_IP(x) ((x)->ip)
+// PT_REGS_* macros are provided by bpf_tracing.h
 
 #endif /* __VMLINUX_H__ */
