@@ -140,7 +140,6 @@ static __always_inline int is_http_data(const char *data, __u32 size) {
 SEC("kprobe/sys_write")
 int kprobe_sys_write(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
     if (should_filter_pid(pid)) {
         return 0;
@@ -155,9 +154,17 @@ int kprobe_sys_write(struct pt_regs *ctx) {
         return 0;
     }
 
+    // Skip if count is 0 (verifier requires this check)
+    if (count == 0) {
+        return 0;
+    }
+
     // Read first bytes to check if HTTP
     char data[MAX_DATA_SIZE] = {};
-    __u32 to_read = count < MAX_DATA_SIZE ? count : MAX_DATA_SIZE;
+    __u32 to_read = count;
+    if (to_read > MAX_DATA_SIZE) {
+        to_read = MAX_DATA_SIZE;
+    }
     if (bpf_probe_read_user(data, to_read, buf) < 0) {
         return 0;
     }
@@ -200,7 +207,6 @@ int kprobe_sys_read(struct pt_regs *ctx) {
 SEC("kretprobe/sys_read")
 int kretprobe_sys_read(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
     if (should_filter_pid(pid)) {
         return 0;
@@ -232,9 +238,17 @@ int uprobe_ssl_write(struct pt_regs *ctx) {
     const char *buf = (const char *)PT_REGS_PARM2(ctx);
     int num = (int)PT_REGS_PARM3(ctx);
 
+    // Skip if size is not positive (verifier requires this check)
+    if (num <= 0) {
+        return 0;
+    }
+
     // Read first bytes to check if HTTP
     char data[MAX_DATA_SIZE] = {};
-    __u32 to_read = num < MAX_DATA_SIZE ? num : MAX_DATA_SIZE;
+    __u32 to_read = (__u32)num;
+    if (to_read > MAX_DATA_SIZE) {
+        to_read = MAX_DATA_SIZE;
+    }
     if (bpf_probe_read_user(data, to_read, buf) < 0) {
         return 0;
     }
@@ -324,8 +338,16 @@ int uprobe_gnutls_send(struct pt_regs *ctx) {
     const char *data = (const char *)PT_REGS_PARM2(ctx);
     size_t data_size = (size_t)PT_REGS_PARM3(ctx);
 
+    // Skip if size is 0 (verifier requires this check)
+    if (data_size == 0) {
+        return 0;
+    }
+
     char buf[MAX_DATA_SIZE] = {};
-    __u32 to_read = data_size < MAX_DATA_SIZE ? data_size : MAX_DATA_SIZE;
+    __u32 to_read = data_size;
+    if (to_read > MAX_DATA_SIZE) {
+        to_read = MAX_DATA_SIZE;
+    }
     if (bpf_probe_read_user(buf, to_read, data) < 0) {
         return 0;
     }
@@ -412,8 +434,16 @@ int uprobe_pr_write(struct pt_regs *ctx) {
     const char *buf = (const char *)PT_REGS_PARM2(ctx);
     int amount = (int)PT_REGS_PARM3(ctx);
 
+    // Skip if size is not positive (verifier requires this check)
+    if (amount <= 0) {
+        return 0;
+    }
+
     char data[MAX_DATA_SIZE] = {};
-    __u32 to_read = amount < MAX_DATA_SIZE ? amount : MAX_DATA_SIZE;
+    __u32 to_read = (__u32)amount;
+    if (to_read > MAX_DATA_SIZE) {
+        to_read = MAX_DATA_SIZE;
+    }
     if (bpf_probe_read_user(data, to_read, buf) < 0) {
         return 0;
     }
