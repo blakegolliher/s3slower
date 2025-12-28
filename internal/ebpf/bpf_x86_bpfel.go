@@ -20,7 +20,7 @@ type bpfReqInfoT struct {
 	Fd         uint32
 	ClientType uint8
 	Comm       [16]int8
-	Data       [64]int8
+	Data       [96]int8
 	_          [7]byte
 }
 
