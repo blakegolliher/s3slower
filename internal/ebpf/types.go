@@ -45,7 +45,7 @@ type RawEvent struct {
 	IsPartial      uint8
 	ClientType     uint8
 	_              [2]byte // padding
-	Data           [64]byte
+	Data           [96]byte
 }
 
 // ClientType constants matching BPF program.

@@ -62,9 +62,9 @@ func (w *Writer) WriteHeader() {
 }
 
 func (w *Writer) writeTableHeader() {
-	fmt.Fprintf(w.out, "%-12s %-6s %-16s %-24s %10s %10s %-30s\n",
-		"TIME", "METHOD", "BUCKET", "ENDPOINT", "BYTES", "LAT(ms)", "KEY")
-	fmt.Fprintf(w.out, "%s\n", strings.Repeat("-", 115))
+	fmt.Fprintf(w.out, "%-12s %-6s %-8s %-14s %-15s %8s %9s %-26s\n",
+		"TIME", "METHOD", "OP", "BUCKET", "ENDPOINT", "BYTES", "LAT(ms)", "KEY")
+	fmt.Fprintf(w.out, "%s\n", strings.Repeat("-", 105))
 }
 
 // WriteEvent writes a single event.
@@ -92,14 +92,21 @@ func (w *Writer) writeTableEvent(e *event.S3Event) {
 		key = key[len(e.Bucket)+1:]
 	}
 
-	fmt.Fprintf(w.out, "%-12s %-6s %-16s %-24s %10d %10.2f %-30s\n",
+	// Format operation - use abbreviated Operation if set, otherwise show "-"
+	operation := abbreviateOp(string(e.Operation))
+	if operation == "" {
+		operation = "-"
+	}
+
+	fmt.Fprintf(w.out, "%-12s %-6s %-8s %-14s %-15s %8d %9.2f %-26s\n",
 		timeStr,
 		e.Method,
-		truncate(e.Bucket, 16),
-		truncate(e.Endpoint, 24),
+		operation,
+		truncate(e.Bucket, 14),
+		truncate(e.Endpoint, 15),
 		e.ResponseSize,
 		e.LatencyMs,
-		truncate(key, 30),
+		truncate(key, 26),
 	)
 }
 
@@ -132,6 +139,40 @@ func (w *Writer) Flush() error {
 		return f.Sync()
 	}
 	return nil
+}
+
+// abbreviateOp returns a shortened operation name for display.
+func abbreviateOp(op string) string {
+	switch op {
+	case "GET_OBJECT":
+		return "GET"
+	case "PUT_OBJECT":
+		return "PUT"
+	case "DELETE_OBJECT":
+		return "DELETE"
+	case "HEAD_OBJECT":
+		return "HEAD"
+	case "LIST_OBJECTS":
+		return "LIST"
+	case "LIST_PREFIX":
+		return "LIST_PFX"
+	case "MPU_CREATE":
+		return "MPU_INIT"
+	case "MPU_PART":
+		return "MPU_PART"
+	case "MPU_COMPLETE":
+		return "MPU_DONE"
+	case "MPU_ABORT":
+		return "MPU_ABRT"
+	case "CREATE_BUCKET":
+		return "CRT_BKT"
+	case "DELETE_BUCKET":
+		return "DEL_BKT"
+	case "HEAD_BUCKET":
+		return "HEAD_BKT"
+	default:
+		return op
+	}
 }
 
 // truncate truncates a string to max length, adding ellipsis if needed.
