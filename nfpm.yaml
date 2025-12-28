@@ -31,7 +31,7 @@ contents:
       group: root
 
   # Systemd service file
-  - src: ../systemd/s3slower.service
+  - src: systemd/s3slower.service
     dst: /usr/lib/systemd/system/s3slower.service
     type: config|noreplace
     file_info:
@@ -40,7 +40,7 @@ contents:
       group: root
 
   # Default configuration
-  - src: ../s3slower.yaml
+  - src: s3slower.yaml
     dst: /etc/s3slower/s3slower.yaml
     type: config|noreplace
     file_info:
@@ -132,11 +132,3 @@ deb:
       #!/bin/sh
       systemctl daemon-reload
 
-# Overrides for additional architectures
-overrides:
-  arm64:
-    contents:
-      - src: build/s3slower-linux-arm64
-        dst: /usr/bin/s3slower
-        file_info:
-          mode: 0755
