@@ -8,8 +8,9 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-// Maximum data capture size
-#define MAX_DATA_SIZE 64
+// Maximum data capture size (96 bytes to capture URLs with query params)
+// Note: Limited by BPF stack size (512 bytes per program)
+#define MAX_DATA_SIZE 96
 #define TASK_COMM_LEN 16
 
 // Client type constants
