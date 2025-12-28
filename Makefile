@@ -1,15 +1,20 @@
-# S3Slower Go Build Configuration
+# S3Slower - eBPF-based S3 Client Latency Tracer
 #
 # Build targets:
 #   make build       - Build the binary
 #   make test        - Run all tests
-#   make test-cover  - Run tests with coverage
 #   make rpm         - Build RPM package
+#   make deb         - Build DEB package
+#   make install     - Install to system
 #   make clean       - Clean build artifacts
-#   make install     - Install to /usr/local/bin
+#
+# Requirements:
+#   - Go 1.21+
+#   - For packaging: nfpm (auto-installed if missing)
+#   - For BPF generation: clang, bpftool
 
 BINARY_NAME := s3slower
-VERSION := $(shell cat ../version.txt 2>/dev/null || echo "0.1.0")
+VERSION := $(shell cat version.txt 2>/dev/null || echo "0.1.0")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -21,37 +26,28 @@ GOFLAGS := -trimpath
 BUILD_DIR := build
 DIST_DIR := dist
 
+.PHONY: all build test test-race test-cover lint fmt tidy deps \
+        rpm deb packages install uninstall clean generate version dev ci help
+
 # Default target
-.PHONY: all
 all: build
 
 # Build the binary
-.PHONY: build
 build: $(BUILD_DIR)/$(BINARY_NAME)
 
-$(BUILD_DIR)/$(BINARY_NAME): $(shell find . -name '*.go')
+$(BUILD_DIR)/$(BINARY_NAME): $(shell find . -name '*.go' -not -path './.git/*')
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 go build $(GOFLAGS) $(LDFLAGS) -o $@ ./cmd/s3slower
 
-# Build for multiple architectures
-.PHONY: build-all
-build-all:
-	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/s3slower
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./cmd/s3slower
-
 # Run tests
-.PHONY: test
 test:
 	go test -v ./...
 
 # Run tests with race detection
-.PHONY: test-race
 test-race:
 	go test -race -v ./...
 
 # Run tests with coverage
-.PHONY: test-cover
 test-cover:
 	@mkdir -p $(BUILD_DIR)
 	go test -coverprofile=$(BUILD_DIR)/coverage.out ./...
@@ -59,51 +55,29 @@ test-cover:
 	@echo "Coverage report: $(BUILD_DIR)/coverage.html"
 	@go tool cover -func=$(BUILD_DIR)/coverage.out | tail -1
 
-# Run tests with coverage and show summary
-.PHONY: test-summary
-test-summary:
-	@echo "Running tests..."
-	@go test -count=1 ./... 2>&1 | grep -E '^(ok|FAIL|---|\?)'
-	@echo ""
-	@echo "Test summary complete"
-
-# Generate test report
-.PHONY: test-report
-test-report:
-	@mkdir -p $(BUILD_DIR)
-	go test -json ./... > $(BUILD_DIR)/test-results.json 2>&1 || true
-	@echo "Test results: $(BUILD_DIR)/test-results.json"
-
-# Lint the code
-.PHONY: lint
+# Run linter
 lint:
 	@which golangci-lint > /dev/null || go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	golangci-lint run ./...
 
-# Format the code
-.PHONY: fmt
+# Format code
 fmt:
 	go fmt ./...
 	gofmt -s -w .
 
 # Tidy dependencies
-.PHONY: tidy
 tidy:
 	go mod tidy
 
 # Download dependencies
-.PHONY: deps
 deps:
 	go mod download
 
-# Generate BPF program (requires clang, kernel-devel)
-# Uses libbpf headers from kernel source when libbpf-devel is not installed
-# First tries running kernel, then falls back to any available kernel-devel
+# Generate BPF program (requires clang, bpftool)
 KERNEL_VERSION := $(shell uname -r)
 KERNEL_SRC := $(shell if [ -d /usr/src/kernels/$(KERNEL_VERSION) ]; then echo /usr/src/kernels/$(KERNEL_VERSION); else ls -d /usr/src/kernels/* 2>/dev/null | head -1; fi)
 LIBBPF_INCLUDE := -I$(KERNEL_SRC)/tools/lib/bpf -I$(KERNEL_SRC)/tools/bpf/resolve_btfids/libbpf/include
 
-.PHONY: generate
 generate:
 	@echo "Generating BPF program..."
 	@which bpftool > /dev/null || (echo "bpftool required for vmlinux.h generation" && exit 1)
@@ -112,86 +86,84 @@ generate:
 	@echo "Using libbpf headers from: $(KERNEL_SRC)"
 	cd internal/ebpf && GOPACKAGE=ebpf go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86" -target amd64 bpf bpf/s3slower.c -- $(LIBBPF_INCLUDE) -Ibpf
 
-# Build RPM package using nfpm
-.PHONY: rpm
+# Build RPM package
 rpm: build
 	@mkdir -p $(DIST_DIR)
 	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-	nfpm package --config nfpm.yaml --packager rpm --target $(DIST_DIR)/
+	VERSION=$(VERSION) nfpm package --config nfpm.yaml --packager rpm --target $(DIST_DIR)/
 
-# Build DEB package using nfpm
-.PHONY: deb
+# Build DEB package
 deb: build
 	@mkdir -p $(DIST_DIR)
 	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-	nfpm package --config nfpm.yaml --packager deb --target $(DIST_DIR)/
+	VERSION=$(VERSION) nfpm package --config nfpm.yaml --packager deb --target $(DIST_DIR)/
 
 # Build all packages
-.PHONY: packages
 packages: rpm deb
 
 # Install binary
-.PHONY: install
 install: build
 	install -Dm755 $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
-	install -Dm644 ../systemd/s3slower.service /usr/lib/systemd/system/s3slower.service
-	install -Dm644 ../s3slower.yaml /etc/s3slower/s3slower.yaml
+	install -Dm644 systemd/s3slower.service /usr/lib/systemd/system/s3slower.service
+	install -Dm644 s3slower.yaml /etc/s3slower/s3slower.yaml
 
 # Uninstall binary
-.PHONY: uninstall
 uninstall:
 	rm -f /usr/local/bin/$(BINARY_NAME)
 	rm -f /usr/lib/systemd/system/s3slower.service
 	rm -rf /etc/s3slower
 
 # Clean build artifacts
-.PHONY: clean
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -rf $(DIST_DIR)
 	go clean
 
 # Show version
-.PHONY: version
 version:
 	@echo "Version: $(VERSION)"
 	@echo "Commit:  $(COMMIT)"
 	@echo "Date:    $(BUILD_DATE)"
 
-# Development helpers
-.PHONY: dev
+# Development workflow
 dev: deps fmt lint test build
 
 # CI pipeline
-.PHONY: ci
 ci: deps fmt lint test-race test-cover build
 
 # Help
-.PHONY: help
 help:
-	@echo "S3Slower Go Build System"
+	@echo "S3Slower Build System"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
-	@echo "Targets:"
+	@echo "Build:"
 	@echo "  build        Build the binary"
-	@echo "  build-all    Build for linux/amd64 and linux/arm64"
+	@echo "  clean        Clean build artifacts"
+	@echo ""
+	@echo "Test:"
 	@echo "  test         Run all tests"
 	@echo "  test-race    Run tests with race detection"
 	@echo "  test-cover   Run tests with coverage report"
-	@echo "  test-summary Show test summary"
-	@echo "  lint         Run linter"
-	@echo "  fmt          Format code"
+	@echo ""
+	@echo "Package:"
 	@echo "  rpm          Build RPM package"
 	@echo "  deb          Build DEB package"
-	@echo "  packages     Build all packages"
-	@echo "  generate     Generate BPF program (requires clang, bpftool)"
+	@echo "  packages     Build all packages (RPM and DEB)"
+	@echo ""
+	@echo "Install:"
 	@echo "  install      Install to /usr/local/bin"
-	@echo "  uninstall    Uninstall"
-	@echo "  clean        Clean build artifacts"
+	@echo "  uninstall    Uninstall from system"
+	@echo ""
+	@echo "Development:"
+	@echo "  fmt          Format code"
+	@echo "  lint         Run linter"
 	@echo "  deps         Download dependencies"
 	@echo "  tidy         Tidy go.mod"
-	@echo "  version      Show version info"
+	@echo "  generate     Generate BPF program (requires clang, bpftool)"
 	@echo "  dev          Development workflow (deps, fmt, lint, test, build)"
 	@echo "  ci           CI pipeline (deps, fmt, lint, test-race, test-cover, build)"
+	@echo ""
+	@echo "Info:"
+	@echo "  version      Show version info"
 	@echo "  help         Show this help"
