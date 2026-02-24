@@ -13,6 +13,32 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type bpfEventT struct {
+	_               structs.HostLayout
+	TimestampUs     uint64
+	LatencyUs       uint64
+	Pid             uint32
+	Tid             uint32
+	Fd              uint32
+	Comm            [16]int8
+	ReqSize         uint32
+	RespSize        uint32
+	ActualRespBytes uint32
+	IsPartial       uint8
+	ClientType      uint8
+	Pad             [2]uint8
+	Data            [256]int8
+	RespData        [128]int8
+	_               [4]byte
+}
+
+type bpfReadArgsT struct {
+	_      structs.HostLayout
+	BufPtr uint64
+	Fd     uint32
+	Pad    uint32
+}
+
 type bpfReqInfoT struct {
 	_          structs.HostLayout
 	StartTime  uint64
@@ -20,7 +46,7 @@ type bpfReqInfoT struct {
 	Fd         uint32
 	ClientType uint8
 	Comm       [16]int8
-	Data       [96]int8
+	Data       [256]int8
 	_          [7]byte
 }
 
@@ -69,8 +95,11 @@ type bpfProgramSpecs struct {
 	KprobeSysRead       *ebpf.ProgramSpec `ebpf:"kprobe_sys_read"`
 	KprobeSysWrite      *ebpf.ProgramSpec `ebpf:"kprobe_sys_write"`
 	KretprobeSysRead    *ebpf.ProgramSpec `ebpf:"kretprobe_sys_read"`
+	UprobeGnutlsRecv    *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_recv"`
 	UprobeGnutlsSend    *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_send"`
+	UprobePrRead        *ebpf.ProgramSpec `ebpf:"uprobe_pr_read"`
 	UprobePrWrite       *ebpf.ProgramSpec `ebpf:"uprobe_pr_write"`
+	UprobeSslRead       *ebpf.ProgramSpec `ebpf:"uprobe_ssl_read"`
 	UprobeSslWrite      *ebpf.ProgramSpec `ebpf:"uprobe_ssl_write"`
 	UretprobeGnutlsRecv *ebpf.ProgramSpec `ebpf:"uretprobe_gnutls_recv"`
 	UretprobePrRead     *ebpf.ProgramSpec `ebpf:"uretprobe_pr_read"`
@@ -81,9 +110,12 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	ConfigMap *ebpf.MapSpec `ebpf:"config_map"`
-	Events    *ebpf.MapSpec `ebpf:"events"`
-	ReqMap    *ebpf.MapSpec `ebpf:"req_map"`
+	ConfigMap   *ebpf.MapSpec `ebpf:"config_map"`
+	EventHeap   *ebpf.MapSpec `ebpf:"event_heap"`
+	Events      *ebpf.MapSpec `ebpf:"events"`
+	ReadArgsMap *ebpf.MapSpec `ebpf:"read_args_map"`
+	ReqHeap     *ebpf.MapSpec `ebpf:"req_heap"`
+	ReqMap      *ebpf.MapSpec `ebpf:"req_map"`
 }
 
 // bpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -112,15 +144,21 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	ConfigMap *ebpf.Map `ebpf:"config_map"`
-	Events    *ebpf.Map `ebpf:"events"`
-	ReqMap    *ebpf.Map `ebpf:"req_map"`
+	ConfigMap   *ebpf.Map `ebpf:"config_map"`
+	EventHeap   *ebpf.Map `ebpf:"event_heap"`
+	Events      *ebpf.Map `ebpf:"events"`
+	ReadArgsMap *ebpf.Map `ebpf:"read_args_map"`
+	ReqHeap     *ebpf.Map `ebpf:"req_heap"`
+	ReqMap      *ebpf.Map `ebpf:"req_map"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
 		m.ConfigMap,
+		m.EventHeap,
 		m.Events,
+		m.ReadArgsMap,
+		m.ReqHeap,
 		m.ReqMap,
 	)
 }
@@ -138,8 +176,11 @@ type bpfPrograms struct {
 	KprobeSysRead       *ebpf.Program `ebpf:"kprobe_sys_read"`
 	KprobeSysWrite      *ebpf.Program `ebpf:"kprobe_sys_write"`
 	KretprobeSysRead    *ebpf.Program `ebpf:"kretprobe_sys_read"`
+	UprobeGnutlsRecv    *ebpf.Program `ebpf:"uprobe_gnutls_recv"`
 	UprobeGnutlsSend    *ebpf.Program `ebpf:"uprobe_gnutls_send"`
+	UprobePrRead        *ebpf.Program `ebpf:"uprobe_pr_read"`
 	UprobePrWrite       *ebpf.Program `ebpf:"uprobe_pr_write"`
+	UprobeSslRead       *ebpf.Program `ebpf:"uprobe_ssl_read"`
 	UprobeSslWrite      *ebpf.Program `ebpf:"uprobe_ssl_write"`
 	UretprobeGnutlsRecv *ebpf.Program `ebpf:"uretprobe_gnutls_recv"`
 	UretprobePrRead     *ebpf.Program `ebpf:"uretprobe_pr_read"`
@@ -151,8 +192,11 @@ func (p *bpfPrograms) Close() error {
 		p.KprobeSysRead,
 		p.KprobeSysWrite,
 		p.KretprobeSysRead,
+		p.UprobeGnutlsRecv,
 		p.UprobeGnutlsSend,
+		p.UprobePrRead,
 		p.UprobePrWrite,
+		p.UprobeSslRead,
 		p.UprobeSslWrite,
 		p.UretprobeGnutlsRecv,
 		p.UretprobePrRead,

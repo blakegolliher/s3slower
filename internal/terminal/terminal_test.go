@@ -93,14 +93,14 @@ func TestWriteEvent(t *testing.T) {
 
 		e := makeTestEvent()
 		e.Path = "/mybucket/data/mykey.json"
-		e.Endpoint = "s3.amazonaws.com"
+		e.Endpoint = "s3.us-east-1"
 		w.WriteEvent(e)
 
 		output := buf.String()
 		assert.Contains(t, output, "10:30:45")
 		assert.Contains(t, output, "GET")
 		assert.Contains(t, output, "mybucket")
-		assert.Contains(t, output, "s3.amazonaws.com")
+		assert.Contains(t, output, "s3.us-east-1")
 		assert.Contains(t, output, "1024")
 		assert.Contains(t, output, "123.45")
 	})
@@ -133,7 +133,7 @@ func TestWriteEvent(t *testing.T) {
 		assert.Contains(t, output, `"comm":"aws"`)
 		assert.Contains(t, output, `"method":"GET"`)
 		assert.Contains(t, output, `"latency_ms":123.45`)
-		assert.Contains(t, output, `"status":200`)
+		assert.Contains(t, output, `"status_code":200`)
 	})
 }
 

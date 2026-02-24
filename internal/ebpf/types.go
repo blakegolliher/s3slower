@@ -45,7 +45,8 @@ type RawEvent struct {
 	IsPartial      uint8
 	ClientType     uint8
 	_              [2]byte // padding
-	Data           [96]byte
+	Data            [256]byte
+	RespData        [128]byte
 }
 
 // ClientType constants matching BPF program.
@@ -83,24 +84,6 @@ type ProbeStats struct {
 	AttachTime       time.Time
 	LastEventTime    time.Time
 	ActiveProbes     int
-}
-
-// Probe represents an attached eBPF probe.
-type Probe interface {
-	// Type returns the probe type (kprobe or uprobe).
-	Type() ProbeType
-
-	// Mode returns the probe mode.
-	Mode() ProbeMode
-
-	// Attach attaches the probe to its target.
-	Attach() error
-
-	// Detach detaches the probe from its target.
-	Detach() error
-
-	// IsAttached returns whether the probe is currently attached.
-	IsAttached() bool
 }
 
 // Tracer manages eBPF program loading and event collection.

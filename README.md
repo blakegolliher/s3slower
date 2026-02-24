@@ -96,6 +96,7 @@ Commands:
 | `--watch` | Process names to watch (e.g., mc,warp) | - |
 | `--mode` | Probe mode: auto, http, openssl, gnutls, nss | auto |
 | `--debug` | Enable debug output | false |
+| `--output` | Output format: table, simple, json | table |
 | `--log-dir` | Log directory | /var/log/s3slower |
 | `--log-max-size` | Max log size in MB before rotation | 100 |
 | `--no-log` | Disable file logging | false |
@@ -115,14 +116,12 @@ Commands:
 ### Main Configuration (`s3slower.yaml`)
 
 ```yaml
-interval: 5                    # Collection interval (seconds)
 min_latency_ms: 0             # Minimum latency to report
 debug: false                  # Debug logging
 
 prometheus:
   prom_exporter_host: "::"    # Listen address
   prom_exporter_port: 9000    # Listen port
-  buffer_size: 1000           # Sample buffer size
 
 screen:
   table_format: true          # Use table format

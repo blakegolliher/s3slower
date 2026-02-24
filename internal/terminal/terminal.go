@@ -2,6 +2,7 @@
 package terminal
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -121,16 +122,50 @@ func (w *Writer) writeSimpleEvent(e *event.S3Event) {
 	)
 }
 
+// jsonEvent is the JSON representation of an S3 event.
+type jsonEvent struct {
+	Timestamp    string  `json:"timestamp"`
+	PID          uint32  `json:"pid"`
+	TID          uint32  `json:"tid"`
+	Comm         string  `json:"comm"`
+	Method       string  `json:"method"`
+	Operation    string  `json:"operation,omitempty"`
+	Bucket       string  `json:"bucket,omitempty"`
+	Endpoint     string  `json:"endpoint,omitempty"`
+	Path         string  `json:"path"`
+	LatencyMs    float64 `json:"latency_ms"`
+	RequestSize  uint32  `json:"request_size"`
+	ResponseSize uint32  `json:"response_size"`
+	StatusCode   int     `json:"status_code,omitempty"`
+	IsError      bool    `json:"is_error,omitempty"`
+	ClientType   string  `json:"client_type,omitempty"`
+}
+
 func (w *Writer) writeJSONEvent(e *event.S3Event) {
-	fmt.Fprintf(w.out, `{"timestamp":"%s","pid":%d,"comm":"%s","method":"%s","path":"%s","latency_ms":%.2f,"status":%d}`+"\n",
-		e.Timestamp.Format(time.RFC3339),
-		e.PID,
-		e.Comm,
-		e.Method,
-		e.Path,
-		e.LatencyMs,
-		e.StatusCode,
-	)
+	je := jsonEvent{
+		Timestamp:    e.Timestamp.Format(time.RFC3339Nano),
+		PID:          e.PID,
+		TID:          e.TID,
+		Comm:         e.Comm,
+		Method:       e.Method,
+		Operation:    string(e.Operation),
+		Bucket:       e.Bucket,
+		Endpoint:     e.Endpoint,
+		Path:         e.Path,
+		LatencyMs:    e.LatencyMs,
+		RequestSize:  e.RequestSize,
+		ResponseSize: e.ResponseSize,
+		StatusCode:   e.StatusCode,
+		IsError:      e.IsError,
+		ClientType:   e.ClientType,
+	}
+
+	data, err := json.Marshal(je)
+	if err != nil {
+		return
+	}
+	w.out.Write(data)
+	w.out.Write([]byte("\n"))
 }
 
 // Flush flushes any buffered output.

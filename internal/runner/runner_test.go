@@ -133,7 +133,7 @@ func TestHandleEvent(t *testing.T) {
 			Timestamp:    time.Now(),
 			Method:       "GET",
 			Bucket:       "my-bucket",
-			Endpoint:     "s3.amazonaws.com",
+			Endpoint:     "s3.us-east-1",
 			ResponseSize: 1024,
 			LatencyMs:    50.0,
 			Path:         "/my-bucket/key.txt",
@@ -144,7 +144,7 @@ func TestHandleEvent(t *testing.T) {
 		output := buf.String()
 		assert.Contains(t, output, "GET")
 		assert.Contains(t, output, "my-bucket")
-		assert.Contains(t, output, "s3.amazonaws.com")
+		assert.Contains(t, output, "s3.us-east-1")
 	})
 
 	t.Run("writes_to_logger", func(t *testing.T) {

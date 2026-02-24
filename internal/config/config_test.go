@@ -365,7 +365,6 @@ func TestLoadAppConfig(t *testing.T) {
 		config, err := LoadAppConfig("")
 		require.NoError(t, err)
 
-		assert.Equal(t, 5, config.Interval)
 		assert.Equal(t, 0, config.MinLatencyMs)
 		assert.False(t, config.Debug)
 		assert.Equal(t, "::", config.Prometheus.Host)
@@ -377,13 +376,11 @@ func TestLoadAppConfig(t *testing.T) {
 		configPath := filepath.Join(tmpDir, "config.yml")
 
 		content := `
-interval: 10
 min_latency_ms: 100
 debug: true
 prometheus:
   prom_exporter_host: "0.0.0.0"
   prom_exporter_port: 9090
-  buffer_size: 2000
 screen:
   table_format: false
   max_url_length: 100
@@ -393,12 +390,10 @@ screen:
 		config, err := LoadAppConfig(configPath)
 		require.NoError(t, err)
 
-		assert.Equal(t, 10, config.Interval)
 		assert.Equal(t, 100, config.MinLatencyMs)
 		assert.True(t, config.Debug)
 		assert.Equal(t, "0.0.0.0", config.Prometheus.Host)
 		assert.Equal(t, 9090, config.Prometheus.Port)
-		assert.Equal(t, 2000, config.Prometheus.BufferSize)
 		assert.False(t, config.Screen.TableFormat)
 		assert.Equal(t, 100, config.Screen.MaxURLLength)
 	})
@@ -408,13 +403,11 @@ screen:
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	assert.Equal(t, 5, config.Interval)
 	assert.Equal(t, 0, config.MinLatencyMs)
 	assert.Equal(t, 0, config.PID)
 	assert.False(t, config.Debug)
 	assert.Equal(t, "::", config.Prometheus.Host)
 	assert.Equal(t, 9000, config.Prometheus.Port)
-	assert.Equal(t, 1000, config.Prometheus.BufferSize)
 	assert.True(t, config.Screen.TableFormat)
 	assert.Equal(t, 50, config.Screen.MaxURLLength)
 }
