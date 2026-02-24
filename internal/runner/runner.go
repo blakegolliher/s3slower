@@ -190,7 +190,7 @@ func (r *Runner) onProcessAttach(pid int, comm string, target *config.TargetConf
 	r.debugf("Matched process: pid=%d comm=%s target=%s mode=%s",
 		pid, comm, target.ID, target.Mode)
 
-	fmt.Printf("Detected S3 client: %s (PID %d, target: %s)\n",
+	fmt.Fprintf(os.Stderr, "Detected S3 client: %s (PID %d, target: %s)\n",
 		comm, pid, target.ID)
 
 	// Store the target association for label enrichment
@@ -212,13 +212,13 @@ func (r *Runner) handleAppConfigChange(cfg *config.AppConfig) {
 	// Update min latency (can be changed at runtime)
 	if cfg.MinLatencyMs > 0 {
 		r.minLatencyMs = uint64(cfg.MinLatencyMs)
-		fmt.Printf("Updated min latency to %dms\n", cfg.MinLatencyMs)
+		fmt.Fprintf(os.Stderr, "Updated min latency to %dms\n", cfg.MinLatencyMs)
 	}
 
 	// Debug mode change
 	if cfg.Debug != r.config.Debug {
 		r.config.Debug = cfg.Debug
-		fmt.Printf("Debug mode: %v\n", cfg.Debug)
+		fmt.Fprintf(os.Stderr, "Debug mode: %v\n", cfg.Debug)
 	}
 }
 
@@ -229,11 +229,11 @@ func (r *Runner) handleTargetsChange(targets []config.TargetConfig) {
 	tw := r.targetWatcher
 	r.mu.Unlock()
 
-	fmt.Printf("Updated targets: %d configured\n", len(targets))
+	fmt.Fprintf(os.Stderr, "Updated targets: %d configured\n", len(targets))
 
 	// Print target IDs for visibility
 	for _, t := range targets {
-		fmt.Printf("  - %s (match: %s=%s, mode: %s)\n",
+		fmt.Fprintf(os.Stderr, "  - %s (match: %s=%s, mode: %s)\n",
 			t.ID, t.MatchType, t.MatchValue, t.Mode)
 	}
 
@@ -277,7 +277,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "Warning: failed to start target watcher: %v\n", err)
 		} else {
 			defer r.targetWatcher.Stop()
-			fmt.Printf("Watching for %d target processes\n", len(r.targets))
+			fmt.Fprintf(os.Stderr, "Watching for %d target processes\n", len(r.targets))
 		}
 	}
 
@@ -311,7 +311,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		// Fall back to mock tracer (useful for development/testing without root)
 		if r.config.Debug {
-			fmt.Printf("BPF tracer unavailable (%v), using mock tracer\n", err)
+			fmt.Fprintf(os.Stderr, "BPF tracer unavailable (%v), using mock tracer\n", err)
 		}
 		pipeline, err = ebpf.NewPipelineWithMock(pipelineCfg)
 		if err != nil {
@@ -330,18 +330,18 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.debugf("Pipeline started, reading events from perf buffer")
 
 	// Print startup message
-	fmt.Println("s3slower tracer started")
-	fmt.Printf("  Mode: %s\n", mode)
+	fmt.Fprintln(os.Stderr, "s3slower tracer started")
+	fmt.Fprintf(os.Stderr, "  Mode: %s\n", mode)
 	if r.config.TargetPID > 0 {
-		fmt.Printf("  Target PID: %d\n", r.config.TargetPID)
+		fmt.Fprintf(os.Stderr, "  Target PID: %d\n", r.config.TargetPID)
 	}
 	if r.config.MinLatencyMs > 0 {
-		fmt.Printf("  Min latency: %dms\n", r.config.MinLatencyMs)
+		fmt.Fprintf(os.Stderr, "  Min latency: %dms\n", r.config.MinLatencyMs)
 	}
 	if r.logger != nil {
-		fmt.Printf("  Logging to: %s\n", r.config.LogDir)
+		fmt.Fprintf(os.Stderr, "  Logging to: %s\n", r.config.LogDir)
 	}
-	fmt.Println()
+	fmt.Fprintln(os.Stderr)
 
 	// Write headers
 	if r.terminal != nil {
@@ -376,11 +376,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("\nShutting down...")
+			fmt.Fprintln(os.Stderr, "\nShutting down...")
 			return nil
 
 		case <-sigCh:
-			fmt.Println("\nReceived interrupt, shutting down...")
+			fmt.Fprintln(os.Stderr, "\nReceived interrupt, shutting down...")
 			return nil
 
 		case <-cleanupTicker.C:
@@ -455,7 +455,7 @@ func (r *Runner) startPrometheusServer() {
 	if r.exporter == nil {
 		return
 	}
-	fmt.Printf("Starting Prometheus server on %s:%d\n", r.config.PrometheusHost, r.config.PrometheusPort)
+	fmt.Fprintf(os.Stderr, "Starting Prometheus server on %s:%d\n", r.config.PrometheusHost, r.config.PrometheusPort)
 	if err := r.exporter.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Prometheus server error: %v\n", err)
 	}

@@ -26,7 +26,7 @@ GOFLAGS := -trimpath
 BUILD_DIR := build
 DIST_DIR := dist
 
-.PHONY: all build test test-race test-cover lint fmt tidy deps \
+.PHONY: all build test test-race test-cover test-validate lint fmt tidy deps \
         rpm deb packages install uninstall clean generate version dev ci help
 
 # Default target
@@ -46,6 +46,11 @@ test:
 # Run tests with race detection
 test-race:
 	go test -race -v ./...
+
+# Run E2E validation tests (requires root, S3 endpoint, AWS credentials)
+test-validate: build
+	@echo "Running validation tests (requires root, S3 endpoint, AWS credentials)..."
+	sudo -E S3SLOWER_BIN=$(BUILD_DIR)/$(BINARY_NAME) validation_test/run_validation.sh
 
 # Run tests with coverage
 test-cover:
@@ -145,6 +150,7 @@ help:
 	@echo "  test         Run all tests"
 	@echo "  test-race    Run tests with race detection"
 	@echo "  test-cover   Run tests with coverage report"
+	@echo "  test-validate Run E2E validation (requires root + S3)"
 	@echo ""
 	@echo "Package:"
 	@echo "  rpm          Build RPM package"
