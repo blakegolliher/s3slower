@@ -3,7 +3,6 @@ package metrics
 
 import (
 	"testing"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
@@ -172,69 +171,6 @@ func TestExporter(t *testing.T) {
 	})
 }
 
-// TestSampleBuffer tests the SampleBuffer struct.
-func TestSampleBuffer(t *testing.T) {
-	t.Run("add_and_len", func(t *testing.T) {
-		buf := NewSampleBuffer(10)
-
-		assert.Equal(t, 0, buf.Len())
-
-		buf.Add(Sample{
-			Timestamp:  time.Now(),
-			DurationMs: 100.0,
-		})
-
-		assert.Equal(t, 1, buf.Len())
-	})
-
-	t.Run("flush_clears_buffer", func(t *testing.T) {
-		buf := NewSampleBuffer(10)
-
-		buf.Add(Sample{Timestamp: time.Now(), DurationMs: 100.0})
-		buf.Add(Sample{Timestamp: time.Now(), DurationMs: 200.0})
-
-		samples := buf.Flush()
-		assert.Len(t, samples, 2)
-		assert.Equal(t, 0, buf.Len())
-	})
-
-	t.Run("respects_max_size", func(t *testing.T) {
-		buf := NewSampleBuffer(3)
-
-		for i := 0; i < 5; i++ {
-			buf.Add(Sample{
-				Timestamp:  time.Now(),
-				DurationMs: float64(i * 100),
-			})
-		}
-
-		assert.Equal(t, 3, buf.Len())
-
-		samples := buf.Flush()
-		assert.Len(t, samples, 3)
-
-		// Should have the last 3 samples
-		assert.Equal(t, 200.0, samples[0].DurationMs)
-		assert.Equal(t, 300.0, samples[1].DurationMs)
-		assert.Equal(t, 400.0, samples[2].DurationMs)
-	})
-
-	t.Run("flush_returns_copy", func(t *testing.T) {
-		buf := NewSampleBuffer(10)
-
-		buf.Add(Sample{Timestamp: time.Now(), DurationMs: 100.0})
-		samples1 := buf.Flush()
-
-		buf.Add(Sample{Timestamp: time.Now(), DurationMs: 200.0})
-		samples2 := buf.Flush()
-
-		// Modifying samples1 should not affect buffer
-		assert.Len(t, samples1, 1)
-		assert.Len(t, samples2, 1)
-		assert.NotEqual(t, samples1[0].DurationMs, samples2[0].DurationMs)
-	})
-}
-
 // TestDefaultLabels tests the default label set.
 func TestDefaultLabels(t *testing.T) {
 	expected := []string{"hostname", "comm", "s3_operation", "method", "pid"}
@@ -258,14 +194,3 @@ func BenchmarkRecordRequest(b *testing.B) {
 	}
 }
 
-func BenchmarkSampleBufferAdd(b *testing.B) {
-	buf := NewSampleBuffer(1000)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		buf.Add(Sample{
-			Timestamp:  time.Now(),
-			DurationMs: float64(i),
-		})
-	}
-}

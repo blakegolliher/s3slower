@@ -87,6 +87,7 @@ type AttachCallback func(pid int, comm string, target *config.TargetConfig)
 type TargetWatcher struct {
 	targets        []config.TargetConfig
 	attachCallback AttachCallback
+	detachCallback DetachCallback
 	attached       map[int]bool
 	mu             sync.RWMutex
 	running        bool
@@ -246,9 +247,11 @@ func (w *TargetWatcher) CleanupExited() {
 	defer w.mu.Unlock()
 
 	for pid := range w.attached {
-		// Check if process still exists
 		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); os.IsNotExist(err) {
 			delete(w.attached, pid)
+			if w.detachCallback != nil {
+				w.detachCallback(pid)
+			}
 		}
 	}
 }
@@ -258,7 +261,9 @@ type DetachCallback func(pid int)
 
 // SetDetachCallback sets a callback for when processes exit.
 func (w *TargetWatcher) SetDetachCallback(callback DetachCallback) {
-	// Could be implemented if needed for cleanup
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.detachCallback = callback
 }
 
 // KnownS3Clients lists known S3 client process names.

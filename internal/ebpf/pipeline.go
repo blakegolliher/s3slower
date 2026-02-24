@@ -3,6 +3,7 @@ package ebpf
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ type Pipeline struct {
 	processor *event.EventProcessor
 	running   bool
 	stopCh    chan struct{}
+	debug     bool
 
 	// Configuration
 	mode           ProbeMode
@@ -26,6 +28,12 @@ type Pipeline struct {
 	libraryFinder  LibraryFinder
 }
 
+func (p *Pipeline) debugf(format string, args ...interface{}) {
+	if p.debug {
+		fmt.Fprintf(os.Stderr, "[DEBUG] [pipeline] "+format+"\n", args...)
+	}
+}
+
 // PipelineConfig holds configuration for the pipeline.
 type PipelineConfig struct {
 	Mode         ProbeMode
@@ -33,6 +41,7 @@ type PipelineConfig struct {
 	MinLatencyMs uint64
 	LibraryPath  string
 	BufferSize   int
+	Debug        bool
 }
 
 // NewPipeline creates a new event processing pipeline.
@@ -65,6 +74,7 @@ func NewPipeline(config PipelineConfig) (*Pipeline, error) {
 		minLatencyUs:  minLatencyUs,
 		libraryPath:   config.LibraryPath,
 		libraryFinder: NewLibraryFinder(),
+		debug:         config.Debug,
 		stopCh:        make(chan struct{}),
 	}, nil
 }
@@ -92,6 +102,7 @@ func NewPipelineWithMock(config PipelineConfig) (*Pipeline, error) {
 		minLatencyUs:  minLatencyUs,
 		libraryPath:   config.LibraryPath,
 		libraryFinder: NewMockLibraryFinder(),
+		debug:         config.Debug,
 		stopCh:        make(chan struct{}),
 	}, nil
 }
@@ -135,6 +146,7 @@ func (p *Pipeline) Start() error {
 
 // attachProbes attaches the appropriate probes based on mode.
 func (p *Pipeline) attachProbes() error {
+	p.debugf("Attaching probes in mode: %s", p.mode)
 	switch p.mode {
 	case ProbeModeHTTP:
 		return p.tracer.AttachKprobes()
@@ -198,6 +210,9 @@ func (p *Pipeline) handleEvent(raw *RawEvent) {
 
 	// Parse HTTP data
 	s3event.ParseFromRaw(raw.Data[:])
+
+	// Parse response status code from response data
+	s3event.ParseStatusCode(raw.RespData[:])
 
 	// Set client type
 	s3event.ClientType = clientTypeToString(raw.ClientType)

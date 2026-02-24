@@ -229,6 +229,7 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 			isRet   bool
 		}{
 			{"SSL_write", "uprobe_ssl_write", false},
+			{"SSL_read", "uprobe_ssl_read", false},
 			{"SSL_read", "uretprobe_ssl_read", true},
 		}
 	case ProbeModeGnuTLS:
@@ -238,6 +239,7 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 			isRet   bool
 		}{
 			{"gnutls_record_send", "uprobe_gnutls_send", false},
+			{"gnutls_record_recv", "uprobe_gnutls_recv", false},
 			{"gnutls_record_recv", "uretprobe_gnutls_recv", true},
 		}
 	case ProbeModeNSS:
@@ -247,6 +249,7 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 			isRet   bool
 		}{
 			{"PR_Write", "uprobe_pr_write", false},
+			{"PR_Read", "uprobe_pr_read", false},
 			{"PR_Read", "uretprobe_pr_read", true},
 		}
 	default:

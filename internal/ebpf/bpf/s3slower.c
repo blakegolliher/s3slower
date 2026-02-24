@@ -8,9 +8,10 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-// Maximum data capture size (96 bytes to capture URLs with query params)
-// Note: Limited by BPF stack size (512 bytes per program)
-#define MAX_DATA_SIZE 96
+// Data capture sizes
+#define MAX_DATA_SIZE 256
+#define MAX_RESP_SIZE 128
+#define HTTP_CHECK_SIZE 8
 #define TASK_COMM_LEN 16
 
 // Client type constants
@@ -36,6 +37,7 @@ struct event_t {
     __u8 client_type;
     __u8 _pad[2];
     char data[MAX_DATA_SIZE];
+    char resp_data[MAX_RESP_SIZE];
 };
 
 // Request tracking structure
@@ -46,6 +48,13 @@ struct req_info_t {
     __u8 client_type;
     char comm[TASK_COMM_LEN];
     char data[MAX_DATA_SIZE];
+};
+
+// Saves read() arguments from entry probe for use in return probe.
+struct read_args_t {
+    __u64 buf_ptr;
+    __u32 fd;
+    __u32 _pad;
 };
 
 // Configuration map
@@ -70,6 +79,30 @@ struct {
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
 } events SEC(".maps");
+
+// Per-CPU scratch space for event_t construction.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct event_t);
+} event_heap SEC(".maps");
+
+// Per-CPU scratch space for req_info_t construction.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct req_info_t);
+} req_heap SEC(".maps");
+
+// Saves buffer pointers from read entry probes for return probes.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u64);
+    __type(value, struct read_args_t);
+} read_args_map SEC(".maps");
 
 // Config keys
 #define CONFIG_TARGET_PID 0
@@ -97,7 +130,6 @@ static __always_inline int should_filter_latency(__u64 latency_us) {
 
 // Detect client type from comm name
 static __always_inline __u8 detect_client_type(const char *comm) {
-    // Check for known clients
     if (comm[0] == 'w' && comm[1] == 'a' && comm[2] == 'r' && comm[3] == 'p') {
         return CLIENT_WARP;
     }
@@ -105,7 +137,7 @@ static __always_inline __u8 detect_client_type(const char *comm) {
         return CLIENT_ELBENCHO;
     }
     if (comm[0] == 'p' && comm[1] == 'y' && comm[2] == 't') {
-        return CLIENT_BOTO3;  // Python/boto3
+        return CLIENT_BOTO3;
     }
     if (comm[0] == 's' && comm[1] == '3' && comm[2] == 'c') {
         return CLIENT_S3CMD;
@@ -136,383 +168,494 @@ static __always_inline int is_http_data(const char *data, __u32 size) {
     return 0;
 }
 
-// ========== Kprobes for plain HTTP ==========
+// ========== Write/Send Entry Probes ==========
 
 SEC("kprobe/sys_write")
 int kprobe_sys_write(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
 
-    if (should_filter_pid(pid)) {
+    if (should_filter_pid(pid))
         return 0;
-    }
 
     int fd = (int)PT_REGS_PARM1(ctx);
     const char *buf = (const char *)PT_REGS_PARM2(ctx);
     __u32 count = (size_t)PT_REGS_PARM3(ctx);
 
-    // Skip invalid FDs (stdin/stdout/stderr)
-    if (fd < 3) {
+    if (fd < 3 || count == 0)
         return 0;
-    }
 
-    // Skip if count is 0 (verifier requires this check)
-    if (count == 0) {
+    // Quick HTTP check on the stack (8 bytes, well within 512-byte limit)
+    char check[HTTP_CHECK_SIZE] = {};
+    if (bpf_probe_read_user(check, sizeof(check), buf) < 0)
         return 0;
-    }
-
-    // Read first bytes to check if HTTP
-    char data[MAX_DATA_SIZE] = {};
-    __u32 to_read = count;
-    if (to_read > MAX_DATA_SIZE) {
-        to_read = MAX_DATA_SIZE;
-    }
-    if (bpf_probe_read_user(data, to_read, buf) < 0) {
+    if (!is_http_data(check, HTTP_CHECK_SIZE))
         return 0;
-    }
 
-    if (!is_http_data(data, to_read)) {
+    // Build req_info in per-CPU scratch space (too large for stack)
+    __u32 zero = 0;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_heap, &zero);
+    if (!req)
         return 0;
-    }
 
-    // Store request info
+    req->start_time = bpf_ktime_get_ns() / 1000;
+    req->req_size = count;
+    req->fd = fd;
+    bpf_get_current_comm(&req->comm, sizeof(req->comm));
+    req->client_type = detect_client_type(req->comm);
+    bpf_probe_read_user(req->data, MAX_DATA_SIZE, buf);
+
     __u64 key = ((__u64)pid << 32) | (__u32)fd;
-    struct req_info_t req = {};
-    req.start_time = bpf_ktime_get_ns() / 1000;
-    req.req_size = count;
-    req.fd = fd;
-    bpf_get_current_comm(&req.comm, sizeof(req.comm));
-    req.client_type = detect_client_type(req.comm);
-    __builtin_memcpy(req.data, data, MAX_DATA_SIZE);
-
-    bpf_map_update_elem(&req_map, &key, &req, BPF_ANY);
+    bpf_map_update_elem(&req_map, &key, req, BPF_ANY);
 
     return 0;
 }
-
-SEC("kprobe/sys_read")
-int kprobe_sys_read(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-
-    if (should_filter_pid(pid)) {
-        return 0;
-    }
-
-    int fd = (int)PT_REGS_PARM1(ctx);
-    if (fd < 3) {
-        return 0;
-    }
-
-    return 0;
-}
-
-SEC("kretprobe/sys_read")
-int kretprobe_sys_read(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-
-    if (should_filter_pid(pid)) {
-        return 0;
-    }
-
-    ssize_t ret = (ssize_t)PT_REGS_RC(ctx);
-    if (ret <= 0) {
-        return 0;
-    }
-
-    // We need to find the matching request
-    // This is a simplified version - full implementation would track FD properly
-
-    return 0;
-}
-
-// ========== Uprobes for SSL/TLS ==========
 
 SEC("uprobe/SSL_write")
 int uprobe_ssl_write(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
-    if (should_filter_pid(pid)) {
+    if (should_filter_pid(pid))
         return 0;
-    }
 
-    // SSL *ssl = (void *)PT_REGS_PARM1(ctx);
     const char *buf = (const char *)PT_REGS_PARM2(ctx);
     int num = (int)PT_REGS_PARM3(ctx);
-
-    // Skip if size is not positive (verifier requires this check)
-    if (num <= 0) {
+    if (num <= 0)
         return 0;
-    }
 
-    // Read first bytes to check if HTTP
-    char data[MAX_DATA_SIZE] = {};
-    __u32 to_read = (__u32)num;
-    if (to_read > MAX_DATA_SIZE) {
-        to_read = MAX_DATA_SIZE;
-    }
-    if (bpf_probe_read_user(data, to_read, buf) < 0) {
+    char check[HTTP_CHECK_SIZE] = {};
+    if (bpf_probe_read_user(check, sizeof(check), buf) < 0)
         return 0;
-    }
-
-    if (!is_http_data(data, to_read)) {
+    if (!is_http_data(check, HTTP_CHECK_SIZE))
         return 0;
-    }
 
-    // Use TID as a pseudo-FD for SSL connections
+    __u32 zero = 0;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_heap, &zero);
+    if (!req)
+        return 0;
+
+    req->start_time = bpf_ktime_get_ns() / 1000;
+    req->req_size = num;
+    req->fd = tid;
+    bpf_get_current_comm(&req->comm, sizeof(req->comm));
+    req->client_type = detect_client_type(req->comm);
+    bpf_probe_read_user(req->data, MAX_DATA_SIZE, buf);
+
     __u64 key = ((__u64)pid << 32) | tid;
-    struct req_info_t req = {};
-    req.start_time = bpf_ktime_get_ns() / 1000;
-    req.req_size = num;
-    req.fd = tid;
-    bpf_get_current_comm(&req.comm, sizeof(req.comm));
-    req.client_type = detect_client_type(req.comm);
-    __builtin_memcpy(req.data, data, MAX_DATA_SIZE);
+    bpf_map_update_elem(&req_map, &key, req, BPF_ANY);
 
-    bpf_map_update_elem(&req_map, &key, &req, BPF_ANY);
+    return 0;
+}
+
+SEC("uprobe/gnutls_record_send")
+int uprobe_gnutls_send(struct pt_regs *ctx) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    const char *data = (const char *)PT_REGS_PARM2(ctx);
+    size_t data_size = (size_t)PT_REGS_PARM3(ctx);
+    if (data_size == 0)
+        return 0;
+
+    char check[HTTP_CHECK_SIZE] = {};
+    if (bpf_probe_read_user(check, sizeof(check), data) < 0)
+        return 0;
+    if (!is_http_data(check, HTTP_CHECK_SIZE))
+        return 0;
+
+    __u32 zero = 0;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_heap, &zero);
+    if (!req)
+        return 0;
+
+    req->start_time = bpf_ktime_get_ns() / 1000;
+    req->req_size = data_size;
+    req->fd = tid;
+    bpf_get_current_comm(&req->comm, sizeof(req->comm));
+    req->client_type = detect_client_type(req->comm);
+    bpf_probe_read_user(req->data, MAX_DATA_SIZE, data);
+
+    __u64 key = ((__u64)pid << 32) | tid;
+    bpf_map_update_elem(&req_map, &key, req, BPF_ANY);
+
+    return 0;
+}
+
+SEC("uprobe/PR_Write")
+int uprobe_pr_write(struct pt_regs *ctx) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+    int amount = (int)PT_REGS_PARM3(ctx);
+    if (amount <= 0)
+        return 0;
+
+    char check[HTTP_CHECK_SIZE] = {};
+    if (bpf_probe_read_user(check, sizeof(check), buf) < 0)
+        return 0;
+    if (!is_http_data(check, HTTP_CHECK_SIZE))
+        return 0;
+
+    __u32 zero = 0;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_heap, &zero);
+    if (!req)
+        return 0;
+
+    req->start_time = bpf_ktime_get_ns() / 1000;
+    req->req_size = amount;
+    req->fd = tid;
+    bpf_get_current_comm(&req->comm, sizeof(req->comm));
+    req->client_type = detect_client_type(req->comm);
+    bpf_probe_read_user(req->data, MAX_DATA_SIZE, buf);
+
+    __u64 key = ((__u64)pid << 32) | tid;
+    bpf_map_update_elem(&req_map, &key, req, BPF_ANY);
+
+    return 0;
+}
+
+// ========== Read Entry Probes (save buffer pointer for return probes) ==========
+
+SEC("kprobe/sys_read")
+int kprobe_sys_read(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    int fd = (int)PT_REGS_PARM1(ctx);
+    if (fd < 3)
+        return 0;
+
+    // Only save args if there's a pending HTTP request for this PID+FD
+    __u64 req_key = ((__u64)pid << 32) | (__u32)fd;
+    if (!bpf_map_lookup_elem(&req_map, &req_key))
+        return 0;
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+
+    struct read_args_t args = {};
+    args.buf_ptr = (__u64)buf;
+    args.fd = (__u32)fd;
+    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+    return 0;
+}
+
+SEC("uprobe/SSL_read")
+int uprobe_ssl_read(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    if (!bpf_map_lookup_elem(&req_map, &req_key))
+        return 0;
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+
+    struct read_args_t args = {};
+    args.buf_ptr = (__u64)buf;
+    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+    return 0;
+}
+
+SEC("uprobe/gnutls_record_recv")
+int uprobe_gnutls_recv(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    if (!bpf_map_lookup_elem(&req_map, &req_key))
+        return 0;
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+
+    struct read_args_t args = {};
+    args.buf_ptr = (__u64)buf;
+    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+    return 0;
+}
+
+SEC("uprobe/PR_Read")
+int uprobe_pr_read(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    if (!bpf_map_lookup_elem(&req_map, &req_key))
+        return 0;
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+
+    struct read_args_t args = {};
+    args.buf_ptr = (__u64)buf;
+    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+    return 0;
+}
+
+// ========== Read/Recv Return Probes ==========
+
+SEC("kretprobe/sys_read")
+int kretprobe_sys_read(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    ssize_t ret = (ssize_t)PT_REGS_RC(ctx);
+    if (ret <= 0)
+        return 0;
+
+    // Look up saved read arguments from entry probe
+    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    if (!args)
+        return 0;
+    __u64 buf_ptr = args->buf_ptr;
+    __u32 fd = args->fd;
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
+
+    __u64 now = bpf_ktime_get_ns() / 1000;
+
+    // Look up the pending request (kprobes key by real FD, not TID)
+    __u64 req_key = ((__u64)pid << 32) | fd;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
+    if (!req)
+        return 0;
+
+    __u64 latency_us = now - req->start_time;
+    if (should_filter_latency(latency_us)) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    __u32 zero = 0;
+    struct event_t *event = bpf_map_lookup_elem(&event_heap, &zero);
+    if (!event) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    event->timestamp_us = now;
+    event->latency_us = latency_us;
+    event->pid = pid;
+    event->tid = pid_tgid & 0xFFFFFFFF;
+    event->fd = fd;
+    __builtin_memcpy(event->comm, req->comm, TASK_COMM_LEN);
+    event->req_size = req->req_size;
+    event->resp_size = (__u32)ret;
+    event->actual_resp_bytes = (__u32)ret;
+    event->is_partial = 0;
+    event->client_type = req->client_type;
+    __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
+
+    __builtin_memset(event->resp_data, 0, MAX_RESP_SIZE);
+    bpf_probe_read_user(event->resp_data, MAX_RESP_SIZE, (const char *)buf_ptr);
+
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
+    bpf_map_delete_elem(&req_map, &req_key);
 
     return 0;
 }
 
 SEC("uretprobe/SSL_read")
 int uretprobe_ssl_read(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
 
-    if (should_filter_pid(pid)) {
+    if (should_filter_pid(pid))
         return 0;
-    }
 
     int ret = (int)PT_REGS_RC(ctx);
-    if (ret <= 0) {
+    if (ret <= 0)
         return 0;
-    }
+
+    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    if (!args)
+        return 0;
+    __u64 buf_ptr = args->buf_ptr;
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
 
     __u64 now = bpf_ktime_get_ns() / 1000;
 
-    // Look up the request
-    __u64 key = ((__u64)pid << 32) | tid;
-    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &key);
-    if (!req) {
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
+    if (!req)
         return 0;
-    }
 
     __u64 latency_us = now - req->start_time;
-
     if (should_filter_latency(latency_us)) {
-        bpf_map_delete_elem(&req_map, &key);
+        bpf_map_delete_elem(&req_map, &req_key);
         return 0;
     }
 
-    // Send event to userspace
-    struct event_t event = {};
-    event.timestamp_us = now;
-    event.latency_us = latency_us;
-    event.pid = pid;
-    event.tid = tid;
-    event.fd = req->fd;
-    __builtin_memcpy(event.comm, req->comm, TASK_COMM_LEN);
-    event.req_size = req->req_size;
-    event.resp_size = ret;
-    event.actual_resp_bytes = ret;
-    event.is_partial = 0;
-    event.client_type = req->client_type;
-    __builtin_memcpy(event.data, req->data, MAX_DATA_SIZE);
-
-    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
-
-    bpf_map_delete_elem(&req_map, &key);
-
-    return 0;
-}
-
-// GnuTLS probes
-SEC("uprobe/gnutls_record_send")
-int uprobe_gnutls_send(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-
-    if (should_filter_pid(pid)) {
+    __u32 zero = 0;
+    struct event_t *event = bpf_map_lookup_elem(&event_heap, &zero);
+    if (!event) {
+        bpf_map_delete_elem(&req_map, &req_key);
         return 0;
     }
 
-    // gnutls_session_t session = (void *)PT_REGS_PARM1(ctx);
-    const char *data = (const char *)PT_REGS_PARM2(ctx);
-    size_t data_size = (size_t)PT_REGS_PARM3(ctx);
+    event->timestamp_us = now;
+    event->latency_us = latency_us;
+    event->pid = pid;
+    event->tid = tid;
+    event->fd = req->fd;
+    __builtin_memcpy(event->comm, req->comm, TASK_COMM_LEN);
+    event->req_size = req->req_size;
+    event->resp_size = ret;
+    event->actual_resp_bytes = ret;
+    event->is_partial = 0;
+    event->client_type = req->client_type;
+    __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
 
-    // Skip if size is 0 (verifier requires this check)
-    if (data_size == 0) {
-        return 0;
-    }
+    __builtin_memset(event->resp_data, 0, MAX_RESP_SIZE);
+    bpf_probe_read_user(event->resp_data, MAX_RESP_SIZE, (const char *)buf_ptr);
 
-    char buf[MAX_DATA_SIZE] = {};
-    __u32 to_read = data_size;
-    if (to_read > MAX_DATA_SIZE) {
-        to_read = MAX_DATA_SIZE;
-    }
-    if (bpf_probe_read_user(buf, to_read, data) < 0) {
-        return 0;
-    }
-
-    if (!is_http_data(buf, to_read)) {
-        return 0;
-    }
-
-    __u64 key = ((__u64)pid << 32) | tid;
-    struct req_info_t req = {};
-    req.start_time = bpf_ktime_get_ns() / 1000;
-    req.req_size = data_size;
-    req.fd = tid;
-    bpf_get_current_comm(&req.comm, sizeof(req.comm));
-    req.client_type = detect_client_type(req.comm);
-    __builtin_memcpy(req.data, buf, MAX_DATA_SIZE);
-
-    bpf_map_update_elem(&req_map, &key, &req, BPF_ANY);
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
+    bpf_map_delete_elem(&req_map, &req_key);
 
     return 0;
 }
 
 SEC("uretprobe/gnutls_record_recv")
 int uretprobe_gnutls_recv(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
 
-    if (should_filter_pid(pid)) {
+    if (should_filter_pid(pid))
         return 0;
-    }
 
     ssize_t ret = (ssize_t)PT_REGS_RC(ctx);
-    if (ret <= 0) {
+    if (ret <= 0)
         return 0;
-    }
+
+    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    if (!args)
+        return 0;
+    __u64 buf_ptr = args->buf_ptr;
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
 
     __u64 now = bpf_ktime_get_ns() / 1000;
 
-    __u64 key = ((__u64)pid << 32) | tid;
-    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &key);
-    if (!req) {
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
+    if (!req)
         return 0;
-    }
 
     __u64 latency_us = now - req->start_time;
-
     if (should_filter_latency(latency_us)) {
-        bpf_map_delete_elem(&req_map, &key);
+        bpf_map_delete_elem(&req_map, &req_key);
         return 0;
     }
 
-    struct event_t event = {};
-    event.timestamp_us = now;
-    event.latency_us = latency_us;
-    event.pid = pid;
-    event.tid = tid;
-    event.fd = req->fd;
-    __builtin_memcpy(event.comm, req->comm, TASK_COMM_LEN);
-    event.req_size = req->req_size;
-    event.resp_size = ret;
-    event.actual_resp_bytes = ret;
-    event.is_partial = 0;
-    event.client_type = req->client_type;
-    __builtin_memcpy(event.data, req->data, MAX_DATA_SIZE);
-
-    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
-
-    bpf_map_delete_elem(&req_map, &key);
-
-    return 0;
-}
-
-// NSS probes
-SEC("uprobe/PR_Write")
-int uprobe_pr_write(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-
-    if (should_filter_pid(pid)) {
+    __u32 zero = 0;
+    struct event_t *event = bpf_map_lookup_elem(&event_heap, &zero);
+    if (!event) {
+        bpf_map_delete_elem(&req_map, &req_key);
         return 0;
     }
 
-    // PRFileDesc *fd = (void *)PT_REGS_PARM1(ctx);
-    const char *buf = (const char *)PT_REGS_PARM2(ctx);
-    int amount = (int)PT_REGS_PARM3(ctx);
+    event->timestamp_us = now;
+    event->latency_us = latency_us;
+    event->pid = pid;
+    event->tid = tid;
+    event->fd = req->fd;
+    __builtin_memcpy(event->comm, req->comm, TASK_COMM_LEN);
+    event->req_size = req->req_size;
+    event->resp_size = (__u32)ret;
+    event->actual_resp_bytes = (__u32)ret;
+    event->is_partial = 0;
+    event->client_type = req->client_type;
+    __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
 
-    // Skip if size is not positive (verifier requires this check)
-    if (amount <= 0) {
-        return 0;
-    }
+    __builtin_memset(event->resp_data, 0, MAX_RESP_SIZE);
+    bpf_probe_read_user(event->resp_data, MAX_RESP_SIZE, (const char *)buf_ptr);
 
-    char data[MAX_DATA_SIZE] = {};
-    __u32 to_read = (__u32)amount;
-    if (to_read > MAX_DATA_SIZE) {
-        to_read = MAX_DATA_SIZE;
-    }
-    if (bpf_probe_read_user(data, to_read, buf) < 0) {
-        return 0;
-    }
-
-    if (!is_http_data(data, to_read)) {
-        return 0;
-    }
-
-    __u64 key = ((__u64)pid << 32) | tid;
-    struct req_info_t req = {};
-    req.start_time = bpf_ktime_get_ns() / 1000;
-    req.req_size = amount;
-    req.fd = tid;
-    bpf_get_current_comm(&req.comm, sizeof(req.comm));
-    req.client_type = detect_client_type(req.comm);
-    __builtin_memcpy(req.data, data, MAX_DATA_SIZE);
-
-    bpf_map_update_elem(&req_map, &key, &req, BPF_ANY);
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
+    bpf_map_delete_elem(&req_map, &req_key);
 
     return 0;
 }
 
 SEC("uretprobe/PR_Read")
 int uretprobe_pr_read(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
 
-    if (should_filter_pid(pid)) {
+    if (should_filter_pid(pid))
         return 0;
-    }
 
     int ret = (int)PT_REGS_RC(ctx);
-    if (ret <= 0) {
+    if (ret <= 0)
         return 0;
-    }
+
+    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    if (!args)
+        return 0;
+    __u64 buf_ptr = args->buf_ptr;
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
 
     __u64 now = bpf_ktime_get_ns() / 1000;
 
-    __u64 key = ((__u64)pid << 32) | tid;
-    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &key);
-    if (!req) {
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
+    if (!req)
         return 0;
-    }
 
     __u64 latency_us = now - req->start_time;
-
     if (should_filter_latency(latency_us)) {
-        bpf_map_delete_elem(&req_map, &key);
+        bpf_map_delete_elem(&req_map, &req_key);
         return 0;
     }
 
-    struct event_t event = {};
-    event.timestamp_us = now;
-    event.latency_us = latency_us;
-    event.pid = pid;
-    event.tid = tid;
-    event.fd = req->fd;
-    __builtin_memcpy(event.comm, req->comm, TASK_COMM_LEN);
-    event.req_size = req->req_size;
-    event.resp_size = ret;
-    event.actual_resp_bytes = ret;
-    event.is_partial = 0;
-    event.client_type = req->client_type;
-    __builtin_memcpy(event.data, req->data, MAX_DATA_SIZE);
+    __u32 zero = 0;
+    struct event_t *event = bpf_map_lookup_elem(&event_heap, &zero);
+    if (!event) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
 
-    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
+    event->timestamp_us = now;
+    event->latency_us = latency_us;
+    event->pid = pid;
+    event->tid = tid;
+    event->fd = req->fd;
+    __builtin_memcpy(event->comm, req->comm, TASK_COMM_LEN);
+    event->req_size = req->req_size;
+    event->resp_size = ret;
+    event->actual_resp_bytes = ret;
+    event->is_partial = 0;
+    event->client_type = req->client_type;
+    __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
 
-    bpf_map_delete_elem(&req_map, &key);
+    __builtin_memset(event->resp_data, 0, MAX_RESP_SIZE);
+    bpf_probe_read_user(event->resp_data, MAX_RESP_SIZE, (const char *)buf_ptr);
+
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
+    bpf_map_delete_elem(&req_map, &req_key);
 
     return 0;
 }

@@ -158,7 +158,6 @@ func CollectExtraLabelKeys(targets []TargetConfig) []string {
 
 // AppConfig represents the main application configuration.
 type AppConfig struct {
-	Interval     int              `yaml:"interval"`
 	MinLatencyMs int              `yaml:"min_latency_ms"`
 	PID          int              `yaml:"pid,omitempty"`
 	Debug        bool             `yaml:"debug"`
@@ -168,9 +167,8 @@ type AppConfig struct {
 
 // PrometheusConfig holds Prometheus exporter settings.
 type PrometheusConfig struct {
-	Host       string `yaml:"prom_exporter_host"`
-	Port       int    `yaml:"prom_exporter_port"`
-	BufferSize int    `yaml:"buffer_size"`
+	Host string `yaml:"prom_exporter_host"`
+	Port int    `yaml:"prom_exporter_port"`
 }
 
 // ScreenConfig holds screen output settings.
@@ -201,13 +199,11 @@ func LoadAppConfig(path string) (*AppConfig, error) {
 // DefaultConfig returns the default application configuration.
 func DefaultConfig() *AppConfig {
 	return &AppConfig{
-		Interval:     5,
 		MinLatencyMs: 0,
 		Debug:        false,
 		Prometheus: PrometheusConfig{
-			Host:       "::",
-			Port:       9000,
-			BufferSize: 1000,
+			Host: "::",
+			Port: 9000,
 		},
 		Screen: ScreenConfig{
 			TableFormat:  true,
