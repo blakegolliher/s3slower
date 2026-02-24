@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/s3slower/s3slower/internal/config"
 	"github.com/s3slower/s3slower/internal/ebpf"
@@ -35,6 +37,11 @@ type Config struct {
 	LogDir            string
 	LogMaxSizeMB      int
 	LogMaxBackups     int
+	OutputFormat      string // "table", "simple", "json"
+
+	// Screen settings
+	TableFormat  bool
+	MaxURLLength int
 
 	// Watch settings
 	WatchProcesses []string
@@ -58,6 +65,9 @@ func DefaultConfig() Config {
 		LogMaxBackups:    5,
 		PrometheusPort:   9000,
 		PrometheusHost:   "::",
+		OutputFormat:     "table",
+		TableFormat:      true,
+		MaxURLLength:     50,
 	}
 }
 
@@ -76,6 +86,9 @@ type Runner struct {
 	mu           sync.RWMutex
 	targets      []config.TargetConfig
 	minLatencyMs uint64
+
+	// targetLabels maps PIDs to their target's Prometheus labels
+	targetLabels map[uint32]map[string]string
 }
 
 // New creates a new runner.
@@ -87,7 +100,18 @@ func New(cfg Config) (*Runner, error) {
 
 	// Set up terminal output
 	if cfg.EnableTerminal {
-		r.terminal = terminal.NewWriter(os.Stdout, terminal.OutputModeTable, 50)
+		outputMode := terminal.OutputModeTable
+		switch cfg.OutputFormat {
+		case "json":
+			outputMode = terminal.OutputModeJSON
+		case "simple":
+			outputMode = terminal.OutputModeSimple
+		default:
+			if !cfg.TableFormat {
+				outputMode = terminal.OutputModeSimple
+			}
+		}
+		r.terminal = terminal.NewWriter(os.Stdout, outputMode, cfg.MaxURLLength)
 	}
 
 	// Set up file logging
@@ -105,13 +129,6 @@ func New(cfg Config) (*Runner, error) {
 		} else {
 			r.logger = l
 		}
-	}
-
-	// Set up Prometheus metrics
-	if cfg.EnablePrometheus {
-		addr := fmt.Sprintf("%s:%d", cfg.PrometheusHost, cfg.PrometheusPort)
-		r.exporter = metrics.NewExporter(addr, nil)
-		r.metrics = r.exporter.Metrics()
 	}
 
 	// Set up config watcher for hot-reload
@@ -134,6 +151,30 @@ func New(cfg Config) (*Runner, error) {
 		}
 	}
 
+	// Convert --watch process names into target configs
+	if len(cfg.WatchProcesses) > 0 {
+		for _, proc := range cfg.WatchProcesses {
+			proc = strings.TrimSpace(proc)
+			if proc == "" {
+				continue
+			}
+			r.targets = append(r.targets, config.TargetConfig{
+				ID:         "watch-" + proc,
+				MatchType:  config.MatchTypeComm,
+				MatchValue: proc,
+				Mode:       config.ProbeModeAuto,
+			})
+		}
+	}
+
+	// Set up Prometheus metrics (after targets are loaded for label collection)
+	if cfg.EnablePrometheus {
+		addr := fmt.Sprintf("%s:%d", cfg.PrometheusHost, cfg.PrometheusPort)
+		extraLabels := config.CollectExtraLabelKeys(r.targets)
+		r.exporter = metrics.NewExporter(addr, extraLabels)
+		r.metrics = r.exporter.Metrics()
+	}
+
 	// Set up target watcher for process monitoring
 	if len(r.targets) > 0 {
 		r.targetWatcher = watcher.NewTargetWatcher(r.targets, r.onProcessAttach)
@@ -142,13 +183,25 @@ func New(cfg Config) (*Runner, error) {
 	return r, nil
 }
 
-// onProcessAttach is called when a matching process is found.
+// onProcessAttach is called when a matching process is found by the target watcher.
+// Probes are attached globally (not per-process). The watcher provides process
+// identification for Prometheus label enrichment and PID-based filtering.
 func (r *Runner) onProcessAttach(pid int, comm string, target *config.TargetConfig) {
-	fmt.Printf("Detected S3 client: %s (PID %d, target: %s, mode: %s)\n",
-		comm, pid, target.ID, target.Mode)
+	r.debugf("Matched process: pid=%d comm=%s target=%s mode=%s",
+		pid, comm, target.ID, target.Mode)
 
-	// TODO: Attach eBPF probes to this process
-	// This will be implemented when we switch to the real tracer
+	fmt.Printf("Detected S3 client: %s (PID %d, target: %s)\n",
+		comm, pid, target.ID)
+
+	// Store the target association for label enrichment
+	if len(target.PromLabels) > 0 {
+		r.mu.Lock()
+		if r.targetLabels == nil {
+			r.targetLabels = make(map[uint32]map[string]string)
+		}
+		r.targetLabels[uint32(pid)] = target.PromLabels
+		r.mu.Unlock()
+	}
 }
 
 // handleAppConfigChange is called when the app config file changes.
@@ -250,6 +303,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		MinLatencyMs: r.config.MinLatencyMs,
 		LibraryPath:  r.config.LibraryPath,
 		BufferSize:   1000,
+		Debug:        r.config.Debug,
 	}
 
 	// Try to create real BPF pipeline, fall back to mock if not available
@@ -265,12 +319,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 	r.pipeline = pipeline
+	r.debugf("Pipeline created with mode=%s targetPID=%d minLatencyMs=%d",
+		mode, r.config.TargetPID, r.config.MinLatencyMs)
 
 	// Start the pipeline
 	if err := r.pipeline.Start(); err != nil {
 		return fmt.Errorf("failed to start pipeline: %w", err)
 	}
 	defer r.pipeline.Stop()
+	r.debugf("Pipeline started, reading events from perf buffer")
 
 	// Print startup message
 	fmt.Println("s3slower tracer started")
@@ -299,6 +356,18 @@ func (r *Runner) Run(ctx context.Context) error {
 		go r.startPrometheusServer()
 	}
 
+	if r.config.Debug {
+		stats := r.pipeline.Stats()
+		r.debugf("Active probes: %d", stats.TracerStats.ActiveProbes)
+		r.debugf("Target watcher: %v (%d targets)", r.targetWatcher != nil, len(r.targets))
+		r.debugf("Terminal: %v, Logger: %v, Prometheus: %v",
+			r.terminal != nil, r.logger != nil, r.exporter != nil)
+	}
+
+	// Start periodic cleanup of stale PIDs and in-flight requests
+	cleanupTicker := time.NewTicker(30 * time.Second)
+	defer cleanupTicker.Stop()
+
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -314,6 +383,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			fmt.Println("\nReceived interrupt, shutting down...")
 			return nil
 
+		case <-cleanupTicker.C:
+			if r.targetWatcher != nil {
+				r.targetWatcher.CleanupExited()
+				r.debugf("Cleanup: %d attached PIDs", len(r.targetWatcher.GetAttached()))
+			}
+
 		case evt, ok := <-r.pipeline.Events():
 			if !ok {
 				return nil
@@ -325,6 +400,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // handleEvent processes a single event.
 func (r *Runner) handleEvent(evt *event.S3Event) {
+	r.debugf("Event: pid=%d method=%s op=%s bucket=%s latency=%.2fms",
+		evt.PID, evt.Method, evt.Operation, evt.Bucket, evt.LatencyMs)
+
 	// Check against current min latency filter (from hot-reload)
 	minLatency := r.MinLatencyMs()
 	if minLatency > 0 && evt.LatencyMs < float64(minLatency) {
@@ -341,7 +419,7 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 		r.logger.WriteEvent(evt)
 	}
 
-	// Record metrics
+	// Record metrics with label enrichment from target watcher
 	if r.metrics != nil {
 		hostname, _ := os.Hostname()
 		labels := map[string]string{
@@ -351,6 +429,16 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 			"method":       evt.Method,
 			"pid":          fmt.Sprintf("%d", evt.PID),
 		}
+
+		// Merge target-specific labels if this PID has been matched
+		r.mu.RLock()
+		if extraLabels, ok := r.targetLabels[evt.PID]; ok {
+			for k, v := range extraLabels {
+				labels[k] = v
+			}
+		}
+		r.mu.RUnlock()
+
 		r.metrics.RecordRequest(
 			labels,
 			evt.LatencyMs,
@@ -370,6 +458,13 @@ func (r *Runner) startPrometheusServer() {
 	fmt.Printf("Starting Prometheus server on %s:%d\n", r.config.PrometheusHost, r.config.PrometheusPort)
 	if err := r.exporter.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Prometheus server error: %v\n", err)
+	}
+}
+
+// debugf prints a debug message if debug mode is enabled.
+func (r *Runner) debugf(format string, args ...interface{}) {
+	if r.config.Debug {
+		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
 	}
 }
 

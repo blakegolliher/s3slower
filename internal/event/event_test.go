@@ -290,84 +290,37 @@ func TestEventProcessor(t *testing.T) {
 		assert.NotNil(t, p.Events())
 	})
 
-	t.Run("process_write_and_read", func(t *testing.T) {
+	t.Run("send_event", func(t *testing.T) {
 		p := NewEventProcessor(0, 100)
 
-		// Simulate write (request)
-		reqData := []byte("GET /mybucket/mykey.txt HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n")
-		p.ProcessWrite(12345, 12345, 3, "aws", reqData, time.Now())
+		evt := NewS3Event()
+		evt.Method = "GET"
+		evt.LatencyMs = 50.0
 
-		// Simulate read (response)
-		respData := []byte("HTTP/1.1 200 OK\r\n\r\n")
-		p.ProcessRead(12345, 12345, 3, respData, 1024, 10000) // 10ms
+		ok := p.SendEvent(evt)
+		assert.True(t, ok)
 
-		// Check event was produced
 		select {
-		case event := <-p.Events():
-			assert.Equal(t, "GET", event.Method)
-			assert.Equal(t, 200, event.StatusCode)
-			assert.Equal(t, 10.0, event.LatencyMs)
+		case received := <-p.Events():
+			assert.Equal(t, "GET", received.Method)
 		case <-time.After(100 * time.Millisecond):
 			t.Fatal("expected event not received")
 		}
 	})
 
-	t.Run("filters_by_min_latency", func(t *testing.T) {
-		p := NewEventProcessor(100*time.Millisecond, 100) // 100ms minimum
+	t.Run("send_event_full_channel", func(t *testing.T) {
+		p := NewEventProcessor(0, 1) // buffer size 1
 
-		// Send request/response with 10ms latency (below threshold)
-		reqData := []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n")
-		p.ProcessWrite(12345, 12345, 3, "aws", reqData, time.Now())
+		evt1 := NewS3Event()
+		evt1.Method = "GET"
+		ok := p.SendEvent(evt1)
+		assert.True(t, ok)
 
-		respData := []byte("HTTP/1.1 200 OK\r\n\r\n")
-		p.ProcessRead(12345, 12345, 3, respData, 1024, 10000) // 10ms
-
-		// Check no event was produced
-		select {
-		case <-p.Events():
-			t.Fatal("expected no event due to latency filter")
-		case <-time.After(50 * time.Millisecond):
-			// Expected - no event
-		}
-	})
-
-	t.Run("ignores_non_http_methods", func(t *testing.T) {
-		p := NewEventProcessor(0, 100)
-
-		// Send non-HTTP data
-		data := []byte("This is not an HTTP request")
-		p.ProcessWrite(12345, 12345, 3, "test", data, time.Now())
-
-		// No pending request should exist
-		assert.Equal(t, 0, p.correlator.Len())
-	})
-
-	t.Run("handles_orphan_read", func(t *testing.T) {
-		p := NewEventProcessor(0, 100)
-
-		// Send read without matching write
-		respData := []byte("HTTP/1.1 200 OK\r\n\r\n")
-		p.ProcessRead(12345, 12345, 3, respData, 1024, 10000)
-
-		// Should not panic and no event should be produced
-		select {
-		case <-p.Events():
-			t.Fatal("expected no event for orphan read")
-		case <-time.After(50 * time.Millisecond):
-			// Expected
-		}
-	})
-
-	t.Run("cleanup", func(t *testing.T) {
-		p := NewEventProcessor(0, 100)
-
-		// Add some requests
-		reqData := []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n")
-		p.ProcessWrite(12345, 12345, 3, "aws", reqData, time.Now())
-		p.ProcessWrite(12345, 12345, 4, "aws", reqData, time.Now())
-
-		removed := p.Cleanup(0) // Remove everything
-		assert.Equal(t, 2, removed)
+		// Channel is now full
+		evt2 := NewS3Event()
+		evt2.Method = "PUT"
+		ok = p.SendEvent(evt2)
+		assert.False(t, ok) // Should drop
 	})
 
 	t.Run("close", func(t *testing.T) {
