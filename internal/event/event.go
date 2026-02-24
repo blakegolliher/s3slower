@@ -31,7 +31,6 @@ type S3Event struct {
 	// Sizes
 	RequestSize  uint32
 	ResponseSize uint32
-	ActualBytes  uint32
 
 	// Status
 	StatusCode int
@@ -165,15 +164,13 @@ func (c *RequestCorrelator) Len() int {
 
 // EventProcessor handles incoming BPF events and produces S3Events.
 type EventProcessor struct {
-	correlator  *RequestCorrelator
-	minLatency  time.Duration
-	eventChan   chan *S3Event
+	minLatency time.Duration
+	eventChan  chan *S3Event
 }
 
 // NewEventProcessor creates a new EventProcessor.
 func NewEventProcessor(minLatency time.Duration, bufferSize int) *EventProcessor {
 	return &EventProcessor{
-		correlator: NewRequestCorrelator(),
 		minLatency: minLatency,
 		eventChan:  make(chan *S3Event, bufferSize),
 	}
@@ -194,55 +191,7 @@ func (p *EventProcessor) SendEvent(event *S3Event) bool {
 	}
 }
 
-// ProcessWrite handles a write/send event.
-func (p *EventProcessor) ProcessWrite(pid, tid uint32, fd int32, comm string, data []byte, timestamp time.Time) {
-	event := NewS3Event()
-	event.PID = pid
-	event.TID = tid
-	event.FD = fd
-	event.Comm = comm
-	event.Timestamp = timestamp
-
-	event.ParseFromRaw(data)
-
-	// Only track if it looks like an HTTP request
-	if !http.IsS3Method(event.Method) {
-		return
-	}
-
-	p.correlator.AddRequest(pid, fd, event)
-}
-
-// ProcessRead handles a read/recv event.
-func (p *EventProcessor) ProcessRead(pid, tid uint32, fd int32, data []byte, respSize uint32, latencyUs uint64) {
-	event, ok := p.correlator.CompleteRequest(pid, fd)
-	if !ok {
-		return
-	}
-
-	event.ParseStatusCode(data)
-	event.ResponseSize = respSize
-	event.SetLatency(latencyUs)
-
-	// Filter by minimum latency
-	if p.minLatency > 0 && time.Duration(latencyUs)*time.Microsecond < p.minLatency {
-		return
-	}
-
-	// Send to channel (non-blocking)
-	select {
-	case p.eventChan <- event:
-	default:
-		// Channel full, drop event
-	}
-}
-
 // Close closes the event processor.
 func (p *EventProcessor) Close() {
 	close(p.eventChan)
-}
-
-// Cleanup performs periodic cleanup of stale requests.
-func (p *EventProcessor) Cleanup(maxAge time.Duration) int {
-	return p.correlator.CleanupStale(maxAge)
 }

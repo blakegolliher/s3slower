@@ -70,6 +70,7 @@ func newRunCommand() *cobra.Command {
 		logMaxSizeMB int
 		noLog        bool
 		debug        bool
+		outputFormat string
 	)
 
 	cmd := &cobra.Command{
@@ -109,9 +110,16 @@ to enable metrics collection.`,
 				if appCfg.Prometheus.Host != "" {
 					cfg.PrometheusHost = appCfg.Prometheus.Host
 				}
+
+				// Apply screen settings from config file
+				cfg.TableFormat = appCfg.Screen.TableFormat
+				cfg.MaxURLLength = appCfg.Screen.MaxURLLength
 			}
 
 			// Apply CLI flags (override config file)
+			if cmd.Flags().Changed("output") {
+				cfg.OutputFormat = outputFormat
+			}
 			if cmd.Flags().Changed("mode") {
 				cfg.Mode = mode
 			}
@@ -175,6 +183,7 @@ to enable metrics collection.`,
 	cmd.Flags().IntVar(&logMaxSizeMB, "log-max-size", 100, "Max log size in MB before rotation")
 	cmd.Flags().BoolVar(&noLog, "no-log", false, "Disable file logging")
 	cmd.Flags().BoolVar(&debug, "debug", false, "Enable debug output")
+	cmd.Flags().StringVar(&outputFormat, "output", "table", "Output format: table, simple, json")
 
 	return cmd
 }
