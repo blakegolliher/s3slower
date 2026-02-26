@@ -19,6 +19,7 @@ fi
 
 SEQ=0
 TMPDIR_WL=$(mktemp -d)
+S3API_OUTPUT="$TMPDIR_WL/s3api_output.json"
 trap 'rm -rf "$TMPDIR_WL"' EXIT
 
 # Create test data files
@@ -36,9 +37,20 @@ log_op() {
 }
 
 run_s3api() {
-    # Run aws s3api command in background to capture PID, then wait for it
+    # Run aws s3api command in background to capture PID, then wait for it.
+    # stdout from aws is discarded (we only need the PID and exit code).
     local exit_code=0
-    aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api "$@" &
+    aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api "$@" >/dev/null &
+    local cmd_pid=$!
+    wait $cmd_pid || exit_code=$?
+    echo "$cmd_pid:$exit_code"
+}
+
+run_s3api_capture() {
+    # Like run_s3api but captures aws JSON stdout into S3API_OUTPUT file.
+    # Returns PID:exit_code on stdout; read S3API_OUTPUT for the JSON.
+    local exit_code=0
+    aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api "$@" > "$S3API_OUTPUT" &
     local cmd_pid=$!
     wait $cmd_pid || exit_code=$?
     echo "$cmd_pid:$exit_code"
@@ -76,8 +88,8 @@ pid=${result%%:*}; ec=${result##*:}
 log_op "$pid" "HEAD_OBJECT" "HEAD" "test/small.txt" 0 "$ec"
 echo "  [5/19] head-object: exit=$ec" >&2
 
-# 6. get-object
-result=$(run_s3api get-object --bucket "$BUCKET" --key "test/small.txt" "$TMPDIR_WL/downloaded.txt" 2>/dev/null)
+# 6. get-object (uses run_s3api_capture since get-object outputs to a file arg, not stdout)
+result=$(run_s3api_capture get-object --bucket "$BUCKET" --key "test/small.txt" "$TMPDIR_WL/downloaded.txt" 2>/dev/null)
 pid=${result%%:*}; ec=${result##*:}
 log_op "$pid" "GET_OBJECT" "GET" "test/small.txt" 0 "$ec"
 echo "  [6/19] get-object: exit=$ec" >&2
@@ -107,68 +119,43 @@ log_op "$pid" "DELETE_OBJECT" "DELETE" "test/copy.txt" 0 "$ec"
 echo "  [10/19] delete-object: exit=$ec" >&2
 
 # 11. create-multipart-upload
-mpu_output=$(aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api create-multipart-upload --bucket "$BUCKET" --key "test/multipart.bin" 2>/dev/null &
-CMD_PID=$!
-wait $CMD_PID || true
-echo "PID:$CMD_PID"
-)
-# The output is interleaved - extract upload ID from JSON and PID from our marker
-UPLOAD_ID=$(echo "$mpu_output" | grep -o '"UploadId": *"[^"]*"' | head -1 | cut -d'"' -f4)
-MPU_PID=$(echo "$mpu_output" | grep "^PID:" | cut -d: -f2)
-# Fallback: capture PID more reliably
-if [ -z "$MPU_PID" ]; then MPU_PID=0; fi
-log_op "$MPU_PID" "MPU_CREATE" "POST" "test/multipart.bin" 0 0
-echo "  [11/19] create-multipart-upload: upload_id=$UPLOAD_ID" >&2
+result=$(run_s3api_capture create-multipart-upload --bucket "$BUCKET" --key "test/multipart.bin" 2>/dev/null)
+pid=${result%%:*}; ec=${result##*:}
+UPLOAD_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['UploadId'])" "$S3API_OUTPUT" 2>/dev/null || echo "")
+log_op "$pid" "MPU_CREATE" "POST" "test/multipart.bin" 0 "$ec"
+echo "  [11/19] create-multipart-upload: upload_id=$UPLOAD_ID exit=$ec" >&2
 
 # 12. upload-part (5MB)
-etag_output=$(aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api upload-part \
+result=$(run_s3api_capture upload-part \
     --bucket "$BUCKET" --key "test/multipart.bin" \
     --upload-id "$UPLOAD_ID" --part-number 1 \
-    --body "$TMPDIR_WL/5mb.bin" 2>/dev/null &
-CMD_PID=$!
-wait $CMD_PID || true
-echo "PID:$CMD_PID"
-)
-ETAG=$(echo "$etag_output" | grep -o '"ETag": *"[^"]*"' | head -1 | cut -d'"' -f4)
-PART_PID=$(echo "$etag_output" | grep "^PID:" | cut -d: -f2)
-if [ -z "$PART_PID" ]; then PART_PID=0; fi
-log_op "$PART_PID" "MPU_PART" "PUT" "test/multipart.bin" 5242880 0
-echo "  [12/19] upload-part: etag=$ETAG" >&2
+    --body "$TMPDIR_WL/5mb.bin" 2>/dev/null)
+pid=${result%%:*}; ec=${result##*:}
+ETAG=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['ETag'])" "$S3API_OUTPUT" 2>/dev/null || echo "")
+log_op "$pid" "MPU_PART" "PUT" "test/multipart.bin" 5242880 "$ec"
+echo "  [12/19] upload-part: etag=$ETAG exit=$ec" >&2
 
 # 13. complete-multipart-upload
-MPU_JSON="{\"Parts\":[{\"PartNumber\":1,\"ETag\":\"$ETAG\"}]}"
-result=$(aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api complete-multipart-upload \
+MPU_JSON=$(python3 -c "import json; print(json.dumps({'Parts':[{'PartNumber':1,'ETag':'$ETAG'}]}))")
+result=$(run_s3api complete-multipart-upload \
     --bucket "$BUCKET" --key "test/multipart.bin" \
     --upload-id "$UPLOAD_ID" \
-    --multipart-upload "$MPU_JSON" >/dev/null 2>&1 &
-CMD_PID=$!
-wait $CMD_PID || true
-echo "$CMD_PID:$?"
-)
+    --multipart-upload "$MPU_JSON" 2>/dev/null)
 pid=${result%%:*}; ec=${result##*:}
 log_op "$pid" "MPU_COMPLETE" "POST" "test/multipart.bin" 0 "$ec"
 echo "  [13/19] complete-multipart-upload: exit=$ec" >&2
 
 # 14. create-multipart-upload (for abort)
-mpu_output2=$(aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api create-multipart-upload --bucket "$BUCKET" --key "test/abort-me.bin" 2>/dev/null &
-CMD_PID=$!
-wait $CMD_PID || true
-echo "PID:$CMD_PID"
-)
-UPLOAD_ID2=$(echo "$mpu_output2" | grep -o '"UploadId": *"[^"]*"' | head -1 | cut -d'"' -f4)
-MPU_PID2=$(echo "$mpu_output2" | grep "^PID:" | cut -d: -f2)
-if [ -z "$MPU_PID2" ]; then MPU_PID2=0; fi
-log_op "$MPU_PID2" "MPU_CREATE" "POST" "test/abort-me.bin" 0 0
-echo "  [14/19] create-multipart-upload (for abort): upload_id=$UPLOAD_ID2" >&2
+result=$(run_s3api_capture create-multipart-upload --bucket "$BUCKET" --key "test/abort-me.bin" 2>/dev/null)
+pid=${result%%:*}; ec=${result##*:}
+UPLOAD_ID2=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['UploadId'])" "$S3API_OUTPUT" 2>/dev/null || echo "")
+log_op "$pid" "MPU_CREATE" "POST" "test/abort-me.bin" 0 "$ec"
+echo "  [14/19] create-multipart-upload (for abort): upload_id=$UPLOAD_ID2 exit=$ec" >&2
 
 # 15. abort-multipart-upload
-result=$(aws --endpoint-url "$ENDPOINT" $SSL_FLAG s3api abort-multipart-upload \
+result=$(run_s3api abort-multipart-upload \
     --bucket "$BUCKET" --key "test/abort-me.bin" \
-    --upload-id "$UPLOAD_ID2" >/dev/null 2>&1 &
-CMD_PID=$!
-wait $CMD_PID || true
-echo "$CMD_PID:$?"
-)
+    --upload-id "$UPLOAD_ID2" 2>/dev/null)
 pid=${result%%:*}; ec=${result##*:}
 log_op "$pid" "MPU_ABORT" "DELETE" "test/abort-me.bin" 0 "$ec"
 echo "  [15/19] abort-multipart-upload: exit=$ec" >&2

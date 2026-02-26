@@ -185,6 +185,14 @@ func (p *Pipeline) attachProbes() error {
 				fmt.Printf("warning: failed to attach %s uprobes to %s: %v\n", mode, path, err)
 			}
 		}
+
+		// Attach to statically-linked binaries that embed OpenSSL
+		for _, binPath := range p.libraryFinder.FindStaticBinaries() {
+			p.debugf("Found statically-linked SSL binary: %s", binPath)
+			if err := p.tracer.AttachUprobes(binPath, ProbeModeOpenSSL); err != nil {
+				fmt.Printf("warning: failed to attach uprobes to %s: %v\n", binPath, err)
+			}
+		}
 		return nil
 
 	default:

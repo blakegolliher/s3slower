@@ -3,7 +3,7 @@
 #
 # Runs controlled S3 workloads and validates s3slower captures them correctly.
 #
-# Requires: root (eBPF), aws cli, python3+boto3, s3slower binary, S3 endpoint
+# Requires: root (eBPF), aws cli, python3+boto3, elbencho, s3slower binary, S3 endpoint
 #
 # Environment variables:
 #   S3_ENDPOINT          - S3 endpoint URL (default: https://172.200.202.1)
@@ -24,6 +24,7 @@ NO_VERIFY_SSL="${S3_NO_VERIFY_SSL:-true}"
 TIMESTAMP=$(date +%s)
 BUCKET_CLI="s3slower-e2e-${TIMESTAMP}-cli"
 BUCKET_BOTO3="s3slower-e2e-${TIMESTAMP}-boto3"
+BUCKET_ELBENCHO="s3slower-e2e-${TIMESTAMP}-elb"
 
 # Create temp directory for outputs
 TMPDIR=$(mktemp -d /tmp/s3slower-validation-XXXXX)
@@ -31,6 +32,7 @@ CAPTURE_FILE="$TMPDIR/s3slower_capture.jsonl"
 STDERR_LOG="$TMPDIR/s3slower_stderr.log"
 WORKLOAD_CLI="$TMPDIR/workload_awscli.jsonl"
 WORKLOAD_BOTO3="$TMPDIR/workload_boto3.jsonl"
+WORKLOAD_ELBENCHO="$TMPDIR/workload_elbencho.jsonl"
 REPORT_FILE="$TMPDIR/validation_report.json"
 
 S3SLOWER_PID=""
@@ -64,7 +66,7 @@ cleanup() {
     fi
 
     # Abort any in-progress multipart uploads and force-remove buckets
-    for bucket in "$BUCKET_CLI" "$BUCKET_BOTO3"; do
+    for bucket in "$BUCKET_CLI" "$BUCKET_BOTO3" "$BUCKET_ELBENCHO"; do
         # List and abort any in-progress multipart uploads
         local uploads
         uploads=$(aws --endpoint-url "$S3_ENDPOINT" $ssl_flag s3api list-multipart-uploads \
@@ -124,6 +126,12 @@ check_prerequisites() {
         exit 1
     fi
 
+    # elbencho
+    if ! command -v elbencho &>/dev/null; then
+        error "elbencho not found. Install from https://github.com/breuner/elbencho"
+        exit 1
+    fi
+
     # s3slower binary
     if [ ! -x "$S3SLOWER_BIN" ]; then
         error "s3slower binary not found at $S3SLOWER_BIN (run 'make build' first)"
@@ -143,7 +151,7 @@ check_prerequisites() {
     info "  Endpoint: $S3_ENDPOINT"
     info "  Binary:   $S3SLOWER_BIN"
     info "  Output:   $TMPDIR"
-    info "  Buckets:  $BUCKET_CLI, $BUCKET_BOTO3"
+    info "  Buckets:  $BUCKET_CLI, $BUCKET_BOTO3, $BUCKET_ELBENCHO"
 }
 
 # -------------------------------------------------------------------
@@ -196,6 +204,14 @@ main() {
         $boto3_ssl_flag
     info "Boto3 workload complete"
 
+    # Small gap between workloads
+    sleep 2
+
+    # Run elbencho workload
+    info "Running elbencho workload..."
+    bash "$SCRIPT_DIR/s3_workload_elbencho.sh" "$WORKLOAD_ELBENCHO" "$S3_ENDPOINT" "$BUCKET_ELBENCHO"
+    info "Elbencho workload complete"
+
     # Wait for event drain
     info "Waiting 3s for event drain..."
     sleep 3
@@ -222,7 +238,7 @@ main() {
     info "Running validator..."
     python3 "$SCRIPT_DIR/validate_capture.py" \
         --capture "$CAPTURE_FILE" \
-        --workload "$WORKLOAD_CLI" "$WORKLOAD_BOTO3" \
+        --workload "$WORKLOAD_CLI" "$WORKLOAD_BOTO3" "$WORKLOAD_ELBENCHO" \
         --output "$REPORT_FILE"
     local validator_exit=$?
 
