@@ -219,6 +219,45 @@ int kprobe_sys_write(struct pt_regs *ctx) {
     return 0;
 }
 
+// sendto(int fd, void *buff, size_t len, unsigned flags, ...) - same first 3 args as write
+SEC("kprobe/sys_sendto")
+int kprobe_sys_sendto(struct pt_regs *ctx) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    int fd = (int)PT_REGS_PARM1(ctx);
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+    __u32 count = (size_t)PT_REGS_PARM3(ctx);
+
+    if (fd < 3 || count == 0)
+        return 0;
+
+    char check[HTTP_CHECK_SIZE] = {};
+    if (bpf_probe_read_user(check, sizeof(check), buf) < 0)
+        return 0;
+    if (!is_http_data(check, HTTP_CHECK_SIZE))
+        return 0;
+
+    __u32 zero = 0;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_heap, &zero);
+    if (!req)
+        return 0;
+
+    req->start_time = bpf_ktime_get_ns() / 1000;
+    req->req_size = count;
+    req->fd = fd;
+    bpf_get_current_comm(&req->comm, sizeof(req->comm));
+    req->client_type = detect_client_type(req->comm);
+    bpf_probe_read_user(req->data, MAX_DATA_SIZE, buf);
+
+    __u64 key = ((__u64)pid << 32) | (__u32)fd;
+    bpf_map_update_elem(&req_map, &key, req, BPF_ANY);
+
+    return 0;
+}
+
 SEC("uprobe/SSL_write")
 int uprobe_ssl_write(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
@@ -359,6 +398,33 @@ int kprobe_sys_read(struct pt_regs *ctx) {
     return 0;
 }
 
+// recvfrom(int fd, void *ubuf, size_t size, unsigned flags, ...) - same first 3 args as read
+SEC("kprobe/sys_recvfrom")
+int kprobe_sys_recvfrom(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    int fd = (int)PT_REGS_PARM1(ctx);
+    if (fd < 3)
+        return 0;
+
+    __u64 req_key = ((__u64)pid << 32) | (__u32)fd;
+    if (!bpf_map_lookup_elem(&req_map, &req_key))
+        return 0;
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+
+    struct read_args_t args = {};
+    args.buf_ptr = (__u64)buf;
+    args.fd = (__u32)fd;
+    args.source = READ_SRC_KPROBE;
+    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+    return 0;
+}
+
 SEC("uprobe/SSL_read")
 int uprobe_ssl_read(struct pt_regs *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -457,6 +523,71 @@ int kretprobe_sys_read(struct pt_regs *ctx) {
     __u64 now = bpf_ktime_get_ns() / 1000;
 
     // Look up the pending request (kprobes key by real FD, not TID)
+    __u64 req_key = ((__u64)pid << 32) | fd;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
+    if (!req)
+        return 0;
+
+    __u64 latency_us = now - req->start_time;
+    if (should_filter_latency(latency_us)) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    __u32 zero = 0;
+    struct event_t *event = bpf_map_lookup_elem(&event_heap, &zero);
+    if (!event) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    event->timestamp_us = now;
+    event->latency_us = latency_us;
+    event->pid = pid;
+    event->tid = pid_tgid & 0xFFFFFFFF;
+    event->fd = fd;
+    __builtin_memcpy(event->comm, req->comm, TASK_COMM_LEN);
+    event->req_size = req->req_size;
+    event->resp_size = (__u32)ret;
+    event->actual_resp_bytes = (__u32)ret;
+    event->is_partial = 0;
+    event->client_type = req->client_type;
+    __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
+
+    __builtin_memset(event->resp_data, 0, MAX_RESP_SIZE);
+    bpf_probe_read_user(event->resp_data, MAX_RESP_SIZE, (const char *)buf_ptr);
+
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
+    bpf_map_delete_elem(&req_map, &req_key);
+
+    return 0;
+}
+
+SEC("kretprobe/sys_recvfrom")
+int kretprobe_sys_recvfrom(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    ssize_t ret = (ssize_t)PT_REGS_RC(ctx);
+    if (ret <= 0)
+        return 0;
+
+    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    if (!args)
+        return 0;
+
+    if (args->source != READ_SRC_KPROBE)
+        return 0;
+
+    __u64 buf_ptr = args->buf_ptr;
+    __u32 fd = args->fd;
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
+
+    __u64 now = bpf_ktime_get_ns() / 1000;
+
     __u64 req_key = ((__u64)pid << 32) | fd;
     struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
     if (!req)

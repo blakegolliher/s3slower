@@ -93,18 +93,21 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	KprobeSysRead       *ebpf.ProgramSpec `ebpf:"kprobe_sys_read"`
-	KprobeSysWrite      *ebpf.ProgramSpec `ebpf:"kprobe_sys_write"`
-	KretprobeSysRead    *ebpf.ProgramSpec `ebpf:"kretprobe_sys_read"`
-	UprobeGnutlsRecv    *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_recv"`
-	UprobeGnutlsSend    *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_send"`
-	UprobePrRead        *ebpf.ProgramSpec `ebpf:"uprobe_pr_read"`
-	UprobePrWrite       *ebpf.ProgramSpec `ebpf:"uprobe_pr_write"`
-	UprobeSslRead       *ebpf.ProgramSpec `ebpf:"uprobe_ssl_read"`
-	UprobeSslWrite      *ebpf.ProgramSpec `ebpf:"uprobe_ssl_write"`
-	UretprobeGnutlsRecv *ebpf.ProgramSpec `ebpf:"uretprobe_gnutls_recv"`
-	UretprobePrRead     *ebpf.ProgramSpec `ebpf:"uretprobe_pr_read"`
-	UretprobeSslRead    *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_read"`
+	KprobeSysRead        *ebpf.ProgramSpec `ebpf:"kprobe_sys_read"`
+	KprobeSysRecvfrom    *ebpf.ProgramSpec `ebpf:"kprobe_sys_recvfrom"`
+	KprobeSysSendto      *ebpf.ProgramSpec `ebpf:"kprobe_sys_sendto"`
+	KprobeSysWrite       *ebpf.ProgramSpec `ebpf:"kprobe_sys_write"`
+	KretprobeSysRead     *ebpf.ProgramSpec `ebpf:"kretprobe_sys_read"`
+	KretprobeSysRecvfrom *ebpf.ProgramSpec `ebpf:"kretprobe_sys_recvfrom"`
+	UprobeGnutlsRecv     *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_recv"`
+	UprobeGnutlsSend     *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_send"`
+	UprobePrRead         *ebpf.ProgramSpec `ebpf:"uprobe_pr_read"`
+	UprobePrWrite        *ebpf.ProgramSpec `ebpf:"uprobe_pr_write"`
+	UprobeSslRead        *ebpf.ProgramSpec `ebpf:"uprobe_ssl_read"`
+	UprobeSslWrite       *ebpf.ProgramSpec `ebpf:"uprobe_ssl_write"`
+	UretprobeGnutlsRecv  *ebpf.ProgramSpec `ebpf:"uretprobe_gnutls_recv"`
+	UretprobePrRead      *ebpf.ProgramSpec `ebpf:"uretprobe_pr_read"`
+	UretprobeSslRead     *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_read"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
@@ -174,25 +177,31 @@ type bpfVariables struct {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	KprobeSysRead       *ebpf.Program `ebpf:"kprobe_sys_read"`
-	KprobeSysWrite      *ebpf.Program `ebpf:"kprobe_sys_write"`
-	KretprobeSysRead    *ebpf.Program `ebpf:"kretprobe_sys_read"`
-	UprobeGnutlsRecv    *ebpf.Program `ebpf:"uprobe_gnutls_recv"`
-	UprobeGnutlsSend    *ebpf.Program `ebpf:"uprobe_gnutls_send"`
-	UprobePrRead        *ebpf.Program `ebpf:"uprobe_pr_read"`
-	UprobePrWrite       *ebpf.Program `ebpf:"uprobe_pr_write"`
-	UprobeSslRead       *ebpf.Program `ebpf:"uprobe_ssl_read"`
-	UprobeSslWrite      *ebpf.Program `ebpf:"uprobe_ssl_write"`
-	UretprobeGnutlsRecv *ebpf.Program `ebpf:"uretprobe_gnutls_recv"`
-	UretprobePrRead     *ebpf.Program `ebpf:"uretprobe_pr_read"`
-	UretprobeSslRead    *ebpf.Program `ebpf:"uretprobe_ssl_read"`
+	KprobeSysRead        *ebpf.Program `ebpf:"kprobe_sys_read"`
+	KprobeSysRecvfrom    *ebpf.Program `ebpf:"kprobe_sys_recvfrom"`
+	KprobeSysSendto      *ebpf.Program `ebpf:"kprobe_sys_sendto"`
+	KprobeSysWrite       *ebpf.Program `ebpf:"kprobe_sys_write"`
+	KretprobeSysRead     *ebpf.Program `ebpf:"kretprobe_sys_read"`
+	KretprobeSysRecvfrom *ebpf.Program `ebpf:"kretprobe_sys_recvfrom"`
+	UprobeGnutlsRecv     *ebpf.Program `ebpf:"uprobe_gnutls_recv"`
+	UprobeGnutlsSend     *ebpf.Program `ebpf:"uprobe_gnutls_send"`
+	UprobePrRead         *ebpf.Program `ebpf:"uprobe_pr_read"`
+	UprobePrWrite        *ebpf.Program `ebpf:"uprobe_pr_write"`
+	UprobeSslRead        *ebpf.Program `ebpf:"uprobe_ssl_read"`
+	UprobeSslWrite       *ebpf.Program `ebpf:"uprobe_ssl_write"`
+	UretprobeGnutlsRecv  *ebpf.Program `ebpf:"uretprobe_gnutls_recv"`
+	UretprobePrRead      *ebpf.Program `ebpf:"uretprobe_pr_read"`
+	UretprobeSslRead     *ebpf.Program `ebpf:"uretprobe_ssl_read"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
 		p.KprobeSysRead,
+		p.KprobeSysRecvfrom,
+		p.KprobeSysSendto,
 		p.KprobeSysWrite,
 		p.KretprobeSysRead,
+		p.KretprobeSysRecvfrom,
 		p.UprobeGnutlsRecv,
 		p.UprobeGnutlsSend,
 		p.UprobePrRead,
