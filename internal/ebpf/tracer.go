@@ -145,30 +145,39 @@ func (t *BPFTracer) AttachKprobes() error {
 	}
 
 	// Attach kprobe for sys_write
+	// On x86_64 kernels with CONFIG_ARCH_HAS_SYSCALL_WRAPPER=y (>=4.17),
+	// __x64_sys_write wraps the real implementation and takes a single
+	// pt_regs* arg. Target ksys_write first, which takes the unwrapped
+	// (fd, buf, count) args directly, matching what the BPF program expects.
 	writeProbe, ok := t.collection.Programs["kprobe_sys_write"]
 	if !ok {
 		return errors.New("kprobe_sys_write program not found")
 	}
 
-	writeLink, err := link.Kprobe("sys_write", writeProbe, nil)
+	writeLink, err := link.Kprobe("ksys_write", writeProbe, nil)
 	if err != nil {
-		// Try with __x64_sys_write for newer kernels
-		writeLink, err = link.Kprobe("__x64_sys_write", writeProbe, nil)
+		writeLink, err = link.Kprobe("sys_write", writeProbe, nil)
 		if err != nil {
-			return fmt.Errorf("failed to attach kprobe/sys_write: %w", err)
+			writeLink, err = link.Kprobe("__x64_sys_write", writeProbe, nil)
+			if err != nil {
+				return fmt.Errorf("failed to attach kprobe/sys_write: %w", err)
+			}
 		}
 	}
 	t.links = append(t.links, writeLink)
 
-	// Attach kprobe for sys_read
+	// Attach kprobe for sys_read (same wrapper logic)
 	readProbe, ok := t.collection.Programs["kprobe_sys_read"]
 	if ok {
-		readLink, err := link.Kprobe("sys_read", readProbe, nil)
+		readLink, err := link.Kprobe("ksys_read", readProbe, nil)
 		if err != nil {
-			readLink, err = link.Kprobe("__x64_sys_read", readProbe, nil)
+			readLink, err = link.Kprobe("sys_read", readProbe, nil)
 			if err != nil {
-				// Non-fatal, continue without read kprobe
-				fmt.Fprintf(os.Stderr, "warning: failed to attach kprobe/sys_read: %v\n", err)
+				readLink, err = link.Kprobe("__x64_sys_read", readProbe, nil)
+				if err != nil {
+					// Non-fatal, continue without read kprobe
+					fmt.Fprintf(os.Stderr, "warning: failed to attach kprobe/sys_read: %v\n", err)
+				}
 			}
 		}
 		if readLink != nil {
@@ -179,15 +188,72 @@ func (t *BPFTracer) AttachKprobes() error {
 	// Attach kretprobe for sys_read
 	readRetProbe, ok := t.collection.Programs["kretprobe_sys_read"]
 	if ok {
-		readRetLink, err := link.Kretprobe("sys_read", readRetProbe, nil)
+		readRetLink, err := link.Kretprobe("ksys_read", readRetProbe, nil)
 		if err != nil {
-			readRetLink, err = link.Kretprobe("__x64_sys_read", readRetProbe, nil)
+			readRetLink, err = link.Kretprobe("sys_read", readRetProbe, nil)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to attach kretprobe/sys_read: %v\n", err)
+				readRetLink, err = link.Kretprobe("__x64_sys_read", readRetProbe, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to attach kretprobe/sys_read: %v\n", err)
+				}
 			}
 		}
 		if readRetLink != nil {
 			t.links = append(t.links, readRetLink)
+		}
+	}
+
+	// Attach kprobe for sendto (Python/urllib3 uses send()->sendto() for HTTP)
+	sendtoProbe, ok := t.collection.Programs["kprobe_sys_sendto"]
+	if ok {
+		sendtoLink, err := link.Kprobe("__sys_sendto", sendtoProbe, nil)
+		if err != nil {
+			sendtoLink, err = link.Kprobe("sys_sendto", sendtoProbe, nil)
+			if err != nil {
+				sendtoLink, err = link.Kprobe("__x64_sys_sendto", sendtoProbe, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to attach kprobe/sys_sendto: %v\n", err)
+				}
+			}
+		}
+		if sendtoLink != nil {
+			t.links = append(t.links, sendtoLink)
+		}
+	}
+
+	// Attach kprobe for recvfrom
+	recvfromProbe, ok := t.collection.Programs["kprobe_sys_recvfrom"]
+	if ok {
+		recvfromLink, err := link.Kprobe("__sys_recvfrom", recvfromProbe, nil)
+		if err != nil {
+			recvfromLink, err = link.Kprobe("sys_recvfrom", recvfromProbe, nil)
+			if err != nil {
+				recvfromLink, err = link.Kprobe("__x64_sys_recvfrom", recvfromProbe, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to attach kprobe/sys_recvfrom: %v\n", err)
+				}
+			}
+		}
+		if recvfromLink != nil {
+			t.links = append(t.links, recvfromLink)
+		}
+	}
+
+	// Attach kretprobe for recvfrom
+	recvfromRetProbe, ok := t.collection.Programs["kretprobe_sys_recvfrom"]
+	if ok {
+		recvfromRetLink, err := link.Kretprobe("__sys_recvfrom", recvfromRetProbe, nil)
+		if err != nil {
+			recvfromRetLink, err = link.Kretprobe("sys_recvfrom", recvfromRetProbe, nil)
+			if err != nil {
+				recvfromRetLink, err = link.Kretprobe("__x64_sys_recvfrom", recvfromRetProbe, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to attach kretprobe/sys_recvfrom: %v\n", err)
+				}
+			}
+		}
+		if recvfromRetLink != nil {
+			t.links = append(t.links, recvfromRetLink)
 		}
 	}
 
