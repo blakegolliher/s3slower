@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from urllib.parse import quote, unquote
 
 
 def parse_timestamp(ts_str):
@@ -156,10 +157,16 @@ def verify_match(wl, cap):
     # Bucket exact match
     checks["bucket_match"] = cap.get("bucket") == wl["bucket"]
 
-    # Key appears in path
+    # Key appears in path (check both raw and URL-encoded forms)
     wl_key = wl.get("key", "")
     if wl_key:
-        checks["key_in_path"] = wl_key in cap.get("path", "")
+        cap_path = cap.get("path", "")
+        # Check raw key, URL-encoded key, and URL-decoded path
+        checks["key_in_path"] = (
+            wl_key in cap_path
+            or quote(wl_key, safe="") in cap_path
+            or wl_key in unquote(cap_path)
+        )
     else:
         checks["key_in_path"] = True  # No key to check
 

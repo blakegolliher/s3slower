@@ -74,33 +74,33 @@ log_op "HEAD_BUCKET" "HEAD" "" 0 "$ec"
 echo "  [2/11] head-bucket (s3statdirs): exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 3. Write small objects (1KB, single-part PUT)
-# -t1 -n0 -N1 = 1 thread, no subdirs, 1 object → creates <bucket>/0/0
-# Using -n0 -N2 to create 2 objects at root: 0 and 1
+# -t1 -n0 -N1 = 1 thread, no subdirs, 1 object
+# Using -n0 -N2 to create 2 objects: test/r0-f0 and test/r0-f1
+# (elbencho v3 uses rN-fN naming: rank-filenum)
 ec=$(run_elbencho -w -t1 -n0 -N2 -s 1k -b 1m --s3objprefix "test/" "$BUCKET" 2>/dev/null)
-# This creates test/0 and test/1 (each 1KB, single PUT)
-log_op "PUT_OBJECT" "PUT" "test/0" 1024 "$ec"
-log_op "PUT_OBJECT" "PUT" "test/1" 1024 "$ec"
+log_op "PUT_OBJECT" "PUT" "test/r0-f0" 1024 "$ec"
+log_op "PUT_OBJECT" "PUT" "test/r0-f1" 1024 "$ec"
 echo "  [3-4/11] put-object 1KB x2: exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 4. Write large object (10MB with 5MB block = multipart upload)
 # This triggers: CreateMultipartUpload + 2x UploadPart + CompleteMultipartUpload
 ec=$(run_elbencho -w -t1 -n0 -N1 -s 10m -b 5m --s3objprefix "mpu/" "$BUCKET" 2>/dev/null)
-log_op "MPU_CREATE" "POST" "mpu/0" 0 "$ec"
-log_op "MPU_PART" "PUT" "mpu/0" 5242880 "$ec"
-log_op "MPU_PART" "PUT" "mpu/0" 5242880 "$ec"
-log_op "MPU_COMPLETE" "POST" "mpu/0" 0 "$ec"
+log_op "MPU_CREATE" "POST" "mpu/r0-f0" 0 "$ec"
+log_op "MPU_PART" "PUT" "mpu/r0-f0" 5242880 "$ec"
+log_op "MPU_PART" "PUT" "mpu/r0-f0" 5242880 "$ec"
+log_op "MPU_COMPLETE" "POST" "mpu/r0-f0" 0 "$ec"
 echo "  [5-8/11] multipart-upload 10MB (2 parts): exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 5. Stat objects (HEAD)
 ec=$(run_elbencho --stat -t1 -n0 -N2 --s3objprefix "test/" "$BUCKET" 2>/dev/null)
-log_op "HEAD_OBJECT" "HEAD" "test/0" 0 "$ec"
-log_op "HEAD_OBJECT" "HEAD" "test/1" 0 "$ec"
+log_op "HEAD_OBJECT" "HEAD" "test/r0-f0" 0 "$ec"
+log_op "HEAD_OBJECT" "HEAD" "test/r0-f1" 0 "$ec"
 echo "  [9/11] head-object x2: exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 6. Read objects (GET)
 ec=$(run_elbencho -r -t1 -n0 -N2 -s 1k -b 1m --s3objprefix "test/" "$BUCKET" 2>/dev/null)
-log_op "GET_OBJECT" "GET" "test/0" 0 "$ec"
-log_op "GET_OBJECT" "GET" "test/1" 0 "$ec"
+log_op "GET_OBJECT" "GET" "test/r0-f0" 0 "$ec"
+log_op "GET_OBJECT" "GET" "test/r0-f1" 0 "$ec"
 echo "  [10/11] get-object x2: exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 7. List objects
@@ -110,13 +110,13 @@ echo "  [11/11] list-objects: exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 8. Delete small objects
 ec=$(run_elbencho -F -t1 -n0 -N2 --s3objprefix "test/" "$BUCKET" 2>/dev/null)
-log_op "DELETE_OBJECT" "DELETE" "test/0" 0 "$ec"
-log_op "DELETE_OBJECT" "DELETE" "test/1" 0 "$ec"
+log_op "DELETE_OBJECT" "DELETE" "test/r0-f0" 0 "$ec"
+log_op "DELETE_OBJECT" "DELETE" "test/r0-f1" 0 "$ec"
 echo "  [cleanup] delete test objects: exit=$ec" >&2
 
 # 9. Delete multipart object
 ec=$(run_elbencho -F -t1 -n0 -N1 --s3objprefix "mpu/" "$BUCKET" 2>/dev/null)
-log_op "DELETE_OBJECT" "DELETE" "mpu/0" 0 "$ec"
+log_op "DELETE_OBJECT" "DELETE" "mpu/r0-f0" 0 "$ec"
 echo "  [cleanup] delete mpu object: exit=$ec" >&2
 
 # 10. Delete bucket
