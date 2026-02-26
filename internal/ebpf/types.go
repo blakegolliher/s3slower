@@ -132,4 +132,8 @@ type LibraryFinder interface {
 
 	// FindAll returns all available TLS libraries.
 	FindAll() map[ProbeMode]string
+
+	// FindStaticBinaries returns paths to statically-linked executables
+	// that contain SSL_write/SSL_read symbols (e.g. elbencho).
+	FindStaticBinaries() []string
 }
