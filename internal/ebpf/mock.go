@@ -306,6 +306,11 @@ func (m *MockLibraryFinder) FindAll() map[ProbeMode]string {
 	return result
 }
 
+// FindStaticBinaries returns no results in mock mode.
+func (m *MockLibraryFinder) FindStaticBinaries() []string {
+	return nil
+}
+
 // SetOpenSSLPath sets the mock OpenSSL path.
 func (m *MockLibraryFinder) SetOpenSSLPath(path string, err error) {
 	m.mu.Lock()

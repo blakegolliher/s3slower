@@ -50,11 +50,20 @@ struct req_info_t {
     char data[MAX_DATA_SIZE];
 };
 
+// Read args source constants - prevents kretprobe/uretprobe interference.
+// When both kprobes and uprobes are attached, kretprobe_sys_read fires
+// INSIDE SSL_read (before uretprobe_ssl_read) and would steal the
+// read_args_map entry meant for the uretprobe.  The source tag lets
+// each return probe ignore entries it didn't create.
+#define READ_SRC_KPROBE  0
+#define READ_SRC_UPROBE  1
+
 // Saves read() arguments from entry probe for use in return probe.
 struct read_args_t {
     __u64 buf_ptr;
     __u32 fd;
-    __u32 _pad;
+    __u8  source;   // READ_SRC_KPROBE or READ_SRC_UPROBE
+    __u8  _pad[3];
 };
 
 // Configuration map
@@ -345,6 +354,7 @@ int kprobe_sys_read(struct pt_regs *ctx) {
     struct read_args_t args = {};
     args.buf_ptr = (__u64)buf;
     args.fd = (__u32)fd;
+    args.source = READ_SRC_KPROBE;
     bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
     return 0;
 }
@@ -366,6 +376,7 @@ int uprobe_ssl_read(struct pt_regs *ctx) {
 
     struct read_args_t args = {};
     args.buf_ptr = (__u64)buf;
+    args.source = READ_SRC_UPROBE;
     bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
     return 0;
 }
@@ -387,6 +398,7 @@ int uprobe_gnutls_recv(struct pt_regs *ctx) {
 
     struct read_args_t args = {};
     args.buf_ptr = (__u64)buf;
+    args.source = READ_SRC_UPROBE;
     bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
     return 0;
 }
@@ -408,6 +420,7 @@ int uprobe_pr_read(struct pt_regs *ctx) {
 
     struct read_args_t args = {};
     args.buf_ptr = (__u64)buf;
+    args.source = READ_SRC_UPROBE;
     bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
     return 0;
 }
@@ -430,6 +443,13 @@ int kretprobe_sys_read(struct pt_regs *ctx) {
     struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
     if (!args)
         return 0;
+
+    // Only consume entries created by kprobe_sys_read.
+    // Uprobe entries use the same map+key; touching them here would
+    // prevent the matching uretprobe from ever seeing them.
+    if (args->source != READ_SRC_KPROBE)
+        return 0;
+
     __u64 buf_ptr = args->buf_ptr;
     __u32 fd = args->fd;
     bpf_map_delete_elem(&read_args_map, &pid_tgid);
@@ -493,6 +513,11 @@ int uretprobe_ssl_read(struct pt_regs *ctx) {
     struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
     if (!args)
         return 0;
+
+    // Only consume entries created by uprobe read probes
+    if (args->source != READ_SRC_UPROBE)
+        return 0;
+
     __u64 buf_ptr = args->buf_ptr;
     bpf_map_delete_elem(&read_args_map, &pid_tgid);
 
@@ -554,6 +579,11 @@ int uretprobe_gnutls_recv(struct pt_regs *ctx) {
     struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
     if (!args)
         return 0;
+
+    // Only consume entries created by uprobe read probes
+    if (args->source != READ_SRC_UPROBE)
+        return 0;
+
     __u64 buf_ptr = args->buf_ptr;
     bpf_map_delete_elem(&read_args_map, &pid_tgid);
 
@@ -615,6 +645,11 @@ int uretprobe_pr_read(struct pt_regs *ctx) {
     struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
     if (!args)
         return 0;
+
+    // Only consume entries created by uprobe read probes
+    if (args->source != READ_SRC_UPROBE)
+        return 0;
+
     __u64 buf_ptr = args->buf_ptr;
     bpf_map_delete_elem(&read_args_map, &pid_tgid);
 

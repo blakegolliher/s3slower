@@ -2,6 +2,7 @@
 package ebpf
 
 import (
+	"debug/elf"
 	"errors"
 	"os"
 	"os/exec"
@@ -51,6 +52,98 @@ func (f *DefaultLibraryFinder) FindAll() map[ProbeMode]string {
 	}
 
 	return result
+}
+
+// knownStaticBinaries lists S3 client tools that are commonly statically linked.
+var knownStaticBinaries = []string{
+	"elbencho",
+	"warp",
+	"mc",
+}
+
+// extraSearchDirs are checked in addition to PATH when looking for
+// statically-linked binaries.  sudo typically strips /usr/local/* from PATH.
+var extraSearchDirs = []string{
+	"/usr/local/bin",
+	"/usr/local/sbin",
+	"/opt/bin",
+}
+
+// FindStaticBinaries returns paths to statically-linked executables that
+// contain SSL_write/SSL_read symbols. These need their own uprobe attachment
+// since they don't use the system's shared libssl.
+func (f *DefaultLibraryFinder) FindStaticBinaries() []string {
+	var results []string
+
+	for _, name := range knownStaticBinaries {
+		path := findExecutable(name)
+		if path == "" {
+			continue
+		}
+		if hasStaticSSLSymbols(path) {
+			results = append(results, path)
+		}
+	}
+
+	return results
+}
+
+// findExecutable searches PATH and common extra directories for a binary.
+func findExecutable(name string) string {
+	// Try PATH first
+	if path, err := exec.LookPath(name); err == nil {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return path
+	}
+
+	// Fall back to extra directories (handles restricted sudo PATH)
+	for _, dir := range extraSearchDirs {
+		path := filepath.Join(dir, name)
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.Mode()&0111 != 0 { // executable
+			if resolved, err := filepath.EvalSymlinks(path); err == nil {
+				return resolved
+			}
+			return path
+		}
+	}
+
+	return ""
+}
+
+// hasStaticSSLSymbols checks whether an ELF binary contains SSL_write and
+// SSL_read as defined (non-UND) symbols, indicating a statically-linked
+// OpenSSL. We only need the symbol table, not debug info.
+func hasStaticSSLSymbols(path string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	syms, err := f.Symbols()
+	if err != nil {
+		return false
+	}
+
+	var hasWrite, hasRead bool
+	for _, s := range syms {
+		if s.Name == "SSL_write" && s.Value != 0 {
+			hasWrite = true
+		}
+		if s.Name == "SSL_read" && s.Value != 0 {
+			hasRead = true
+		}
+		if hasWrite && hasRead {
+			return true
+		}
+	}
+	return false
 }
 
 // findLibrary finds a TLS library by mode.

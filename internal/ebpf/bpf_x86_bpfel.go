@@ -36,7 +36,8 @@ type bpfReadArgsT struct {
 	_      structs.HostLayout
 	BufPtr uint64
 	Fd     uint32
-	Pad    uint32
+	Source uint8
+	Pad    [3]uint8
 }
 
 type bpfReqInfoT struct {
