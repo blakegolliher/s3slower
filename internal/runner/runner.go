@@ -4,6 +4,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -169,7 +170,7 @@ func New(cfg Config) (*Runner, error) {
 
 	// Set up Prometheus metrics (after targets are loaded for label collection)
 	if cfg.EnablePrometheus {
-		addr := fmt.Sprintf("%s:%d", cfg.PrometheusHost, cfg.PrometheusPort)
+		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
 		extraLabels := config.CollectExtraLabelKeys(r.targets)
 		r.exporter = metrics.NewExporter(addr, extraLabels)
 		r.metrics = r.exporter.Metrics()
@@ -455,7 +456,8 @@ func (r *Runner) startPrometheusServer() {
 	if r.exporter == nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "Starting Prometheus server on %s:%d\n", r.config.PrometheusHost, r.config.PrometheusPort)
+	addr := net.JoinHostPort(r.config.PrometheusHost, fmt.Sprintf("%d", r.config.PrometheusPort))
+	fmt.Fprintf(os.Stderr, "Starting Prometheus server on %s\n", addr)
 	if err := r.exporter.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Prometheus server error: %v\n", err)
 	}
