@@ -17,6 +17,7 @@ BINARY_NAME := s3slower
 VERSION := $(shell cat version.txt 2>/dev/null || echo "0.1.0")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+BUILD_TS := $(shell date -u +"%Y%m%d%H%M%S")
 
 # Go build flags
 LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE) -s -w"
@@ -91,17 +92,15 @@ generate:
 	@echo "Using libbpf headers from: $(KERNEL_SRC)"
 	cd internal/ebpf && GOPACKAGE=ebpf go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86" -target amd64 bpf bpf/s3slower.c -- $(LIBBPF_INCLUDE) -Ibpf
 
-# Build RPM package
+# Build RPM package (timestamped to the second)
 rpm: build
-	@mkdir -p $(DIST_DIR)
-	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-	VERSION=$(VERSION) nfpm package --config nfpm.yaml --packager rpm --target $(DIST_DIR)/
+	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
+	VERSION=$(VERSION) RELEASE=$(BUILD_TS) nfpm package --config nfpm.yaml --packager rpm --target .
 
-# Build DEB package
+# Build DEB package (timestamped to the second)
 deb: build
-	@mkdir -p $(DIST_DIR)
-	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-	VERSION=$(VERSION) nfpm package --config nfpm.yaml --packager deb --target $(DIST_DIR)/
+	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
+	VERSION=$(VERSION) RELEASE=$(BUILD_TS) nfpm package --config nfpm.yaml --packager deb --target .
 
 # Build all packages
 packages: rpm deb
@@ -122,6 +121,7 @@ uninstall:
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -rf $(DIST_DIR)
+	rm -f *.rpm *.deb
 	go clean
 
 # Show version

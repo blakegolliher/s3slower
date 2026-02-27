@@ -34,6 +34,9 @@ WORKLOAD_CLI="$TMPDIR/workload_awscli.jsonl"
 WORKLOAD_BOTO3="$TMPDIR/workload_boto3.jsonl"
 WORKLOAD_ELBENCHO="$TMPDIR/workload_elbencho.jsonl"
 REPORT_FILE="$TMPDIR/validation_report.json"
+PROM_METRICS="$TMPDIR/prometheus_metrics.txt"
+PROM_REPORT="$TMPDIR/prometheus_report.json"
+PROM_PORT=9000
 
 S3SLOWER_PID=""
 
@@ -126,6 +129,12 @@ check_prerequisites() {
         exit 1
     fi
 
+    # curl (for Prometheus metrics scraping)
+    if ! command -v curl &>/dev/null; then
+        error "curl not found. Install: yum install curl"
+        exit 1
+    fi
+
     # elbencho
     if ! command -v elbencho &>/dev/null; then
         error "elbencho not found. Install from https://github.com/breuner/elbencho"
@@ -160,9 +169,10 @@ check_prerequisites() {
 main() {
     check_prerequisites
 
-    # Start s3slower in JSON mode
-    info "Starting s3slower..."
-    $S3SLOWER_BIN run --output json --no-log --min-latency 0 > "$CAPTURE_FILE" 2>"$STDERR_LOG" &
+    # Start s3slower in JSON mode with Prometheus exporter
+    info "Starting s3slower (with Prometheus on port $PROM_PORT)..."
+    $S3SLOWER_BIN run --output json --no-log --min-latency 0 \
+        --prometheus --port "$PROM_PORT" > "$CAPTURE_FILE" 2>"$STDERR_LOG" &
     S3SLOWER_PID=$!
     info "s3slower started (PID $S3SLOWER_PID)"
 
@@ -216,6 +226,17 @@ main() {
     info "Waiting 3s for event drain..."
     sleep 3
 
+    # Scrape Prometheus metrics before stopping s3slower
+    info "Scraping Prometheus metrics from http://127.0.0.1:$PROM_PORT/metrics ..."
+    if curl -sf "http://127.0.0.1:$PROM_PORT/metrics" > "$PROM_METRICS" 2>/dev/null; then
+        local prom_lines
+        prom_lines=$(wc -l < "$PROM_METRICS")
+        info "Scraped $prom_lines lines of Prometheus metrics"
+    else
+        warn "Failed to scrape Prometheus metrics (endpoint may not be ready)"
+        echo "" > "$PROM_METRICS"
+    fi
+
     # Stop s3slower
     info "Stopping s3slower..."
     kill -INT "$S3SLOWER_PID" 2>/dev/null || true
@@ -234,26 +255,59 @@ main() {
         exit 1
     fi
 
-    # Run validator
-    info "Running validator..."
+    # Run capture validator
+    info "Running capture validator..."
     python3 "$SCRIPT_DIR/validate_capture.py" \
         --capture "$CAPTURE_FILE" \
         --workload "$WORKLOAD_CLI" "$WORKLOAD_BOTO3" "$WORKLOAD_ELBENCHO" \
         --output "$REPORT_FILE"
     local validator_exit=$?
 
-    # Print report location
-    info "Report: $REPORT_FILE"
+    # Run Prometheus validator
+    local prom_exit=0
+    if [ -s "$PROM_METRICS" ]; then
+        info "Running Prometheus metrics validator..."
+        python3 "$SCRIPT_DIR/validate_prometheus.py" \
+            --metrics-file "$PROM_METRICS" \
+            --capture "$CAPTURE_FILE" \
+            --workload "$WORKLOAD_CLI" "$WORKLOAD_BOTO3" "$WORKLOAD_ELBENCHO" \
+            --output "$PROM_REPORT"
+        prom_exit=$?
+    else
+        warn "Skipping Prometheus validation (no metrics scraped)"
+        prom_exit=1
+    fi
+
+    # Print report locations
+    info "Capture report: $REPORT_FILE"
+    info "Prometheus report: $PROM_REPORT"
+    info "Prometheus metrics: $PROM_METRICS"
     info "Capture: $CAPTURE_FILE"
     info "Stderr log: $STDERR_LOG"
 
-    if [ $validator_exit -eq 0 ]; then
-        info "VALIDATION PASSED"
+    # Overall result
+    local overall_exit=0
+    if [ $validator_exit -ne 0 ]; then
+        error "CAPTURE VALIDATION FAILED"
+        overall_exit=1
     else
-        error "VALIDATION FAILED"
+        info "CAPTURE VALIDATION PASSED"
     fi
 
-    exit $validator_exit
+    if [ $prom_exit -ne 0 ]; then
+        error "PROMETHEUS VALIDATION FAILED"
+        overall_exit=1
+    else
+        info "PROMETHEUS VALIDATION PASSED"
+    fi
+
+    if [ $overall_exit -eq 0 ]; then
+        info "ALL VALIDATIONS PASSED"
+    else
+        error "SOME VALIDATIONS FAILED"
+    fi
+
+    exit $overall_exit
 }
 
 main "$@"
