@@ -161,6 +161,15 @@ func isIPAddress(s string) bool {
 	return true
 }
 
+// IsLikelyS3Traffic checks whether raw HTTP request data contains AWS S3
+// signature headers (x-amz-*), indicating this is S3 traffic rather than
+// unrelated HTTP traffic (e.g., Prometheus scrapes, Grafana queries).
+func IsLikelyS3Traffic(data []byte) bool {
+	lower := bytes.ToLower(data)
+	return bytes.Contains(lower, []byte("x-amz-")) ||
+		bytes.Contains(lower, []byte("aws4-hmac-sha256"))
+}
+
 // HTTPMethod represents an HTTP method.
 type HTTPMethod string
 

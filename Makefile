@@ -27,8 +27,9 @@ GOFLAGS := -trimpath
 BUILD_DIR := build
 DIST_DIR := dist
 
-.PHONY: all build test test-race test-cover test-validate lint fmt tidy deps \
-        rpm deb packages install uninstall clean generate version dev ci help
+.PHONY: all build test test-race test-cover test-validate test-stress lint fmt tidy deps \
+        rpm deb packages install uninstall clean generate version dev ci help \
+        monitoring-up monitoring-down monitoring-logs
 
 # Default target
 all: build
@@ -52,6 +53,23 @@ test-race:
 test-validate: build
 	@echo "Running validation tests (requires root, S3 endpoint, AWS credentials)..."
 	sudo -E S3SLOWER_BIN=$(BUILD_DIR)/$(BINARY_NAME) validation_test/run_validation.sh
+
+# Run long-running stress test (requires root, S3 endpoint, AWS credentials)
+test-stress: build
+	@echo "Running stress test (requires root, S3 endpoint, AWS credentials)..."
+	sudo -E S3SLOWER_BIN=$(BUILD_DIR)/$(BINARY_NAME) validation_test/stress/run_stress_test.sh
+
+# Start Prometheus + Grafana monitoring stack
+monitoring-up:
+	cd monitoring && podman-compose up -d
+
+# Stop Prometheus + Grafana monitoring stack
+monitoring-down:
+	cd monitoring && podman-compose down
+
+# Tail monitoring container logs
+monitoring-logs:
+	cd monitoring && podman-compose logs -f
 
 # Run tests with coverage
 test-cover:
@@ -147,10 +165,11 @@ help:
 	@echo "  clean        Clean build artifacts"
 	@echo ""
 	@echo "Test:"
-	@echo "  test         Run all tests"
-	@echo "  test-race    Run tests with race detection"
-	@echo "  test-cover   Run tests with coverage report"
+	@echo "  test          Run all tests"
+	@echo "  test-race     Run tests with race detection"
+	@echo "  test-cover    Run tests with coverage report"
 	@echo "  test-validate Run E2E validation (requires root + S3)"
+	@echo "  test-stress   Run long-running stress test (requires root + S3)"
 	@echo ""
 	@echo "Package:"
 	@echo "  rpm          Build RPM package"
@@ -160,6 +179,12 @@ help:
 	@echo "Install:"
 	@echo "  install      Install to /usr/local/bin"
 	@echo "  uninstall    Uninstall from system"
+	@echo ""
+	@echo ""
+	@echo "Monitoring:"
+	@echo "  monitoring-up   Start Prometheus + Grafana"
+	@echo "  monitoring-down Stop Prometheus + Grafana"
+	@echo "  monitoring-logs Tail monitoring container logs"
 	@echo ""
 	@echo "Development:"
 	@echo "  fmt          Format code"

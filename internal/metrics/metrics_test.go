@@ -45,7 +45,8 @@ func TestRegister(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
 			"method":       "GET",
-			"pid":          "12345",
+			"bucket":       "test-bucket",
+			"endpoint":     "http://localhost:9000",
 		}
 		m.RecordRequest(labels, 100.0, 1024, 2048, false, false)
 
@@ -78,7 +79,8 @@ func TestRecordRequest(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
 			"method":       "GET",
-			"pid":          "12345",
+			"bucket":       "test-bucket",
+			"endpoint":     "http://localhost:9000",
 		}
 
 		m.RecordRequest(labels, 100.5, 1024, 2048, false, false)
@@ -100,7 +102,8 @@ func TestRecordRequest(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
 			"method":       "GET",
-			"pid":          "12345",
+			"bucket":       "test-bucket",
+			"endpoint":     "http://localhost:9000",
 		}
 
 		m.RecordRequest(labels, 500.0, 0, 0, true, false)
@@ -118,7 +121,8 @@ func TestRecordRequest(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "PUT_OBJECT",
 			"method":       "PUT",
-			"pid":          "12345",
+			"bucket":       "test-bucket",
+			"endpoint":     "http://localhost:9000",
 		}
 
 		m.RecordRequest(labels, 50.0, 1024, 0, false, true)
@@ -136,7 +140,8 @@ func TestRecordRequest(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
 			"method":       "GET",
-			"pid":          "12345",
+			"bucket":       "test-bucket",
+			"endpoint":     "http://localhost:9000",
 		}
 
 		// Record multiple requests with different latencies
@@ -173,7 +178,7 @@ func TestExporter(t *testing.T) {
 
 // TestDefaultLabels tests the default label set.
 func TestDefaultLabels(t *testing.T) {
-	expected := []string{"hostname", "comm", "s3_operation", "method", "pid"}
+	expected := []string{"hostname", "comm", "s3_operation", "method", "bucket", "endpoint"}
 	assert.Equal(t, expected, DefaultLabels)
 }
 
@@ -185,7 +190,8 @@ func BenchmarkRecordRequest(b *testing.B) {
 		"comm":         "aws",
 		"s3_operation": "GET_OBJECT",
 		"method":       "GET",
-		"pid":          "12345",
+		"bucket":       "test-bucket",
+		"endpoint":     "http://localhost:9000",
 	}
 
 	b.ResetTimer()

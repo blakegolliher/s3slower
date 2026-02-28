@@ -1,0 +1,64 @@
+groups:
+  - name: s3slower.rules
+    interval: 30s
+    rules:
+      # Recording rules for better query performance
+      - record: s3slower:request_rate_5m
+        expr: rate(s3slower_requests_total[5m])
+
+      - record: s3slower:error_rate_5m
+        expr: rate(s3slower_request_errors_total[5m])
+
+      - record: s3slower:throughput_bytes_5m
+        expr: rate(s3slower_request_bytes_total[5m]) + rate(s3slower_response_bytes_total[5m])
+
+      - record: s3slower:request_duration_p50
+        expr: histogram_quantile(0.50, rate(s3slower_request_duration_ms_bucket[5m]))
+
+      - record: s3slower:request_duration_p95
+        expr: histogram_quantile(0.95, rate(s3slower_request_duration_ms_bucket[5m]))
+
+      - record: s3slower:request_duration_p99
+        expr: histogram_quantile(0.99, rate(s3slower_request_duration_ms_bucket[5m]))
+
+  - name: s3slower.alerts
+    rules:
+      - alert: S3SlowerHighLatency
+        expr: histogram_quantile(0.95, rate(s3slower_request_duration_ms_bucket[5m])) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: s3slower
+        annotations:
+          summary: "High S3 latency detected"
+          description: "p95 latency is {{ $value }}ms (threshold: 1000ms) for {{ $labels.comm }} {{ $labels.s3_operation }} on {{ $labels.hostname }}"
+
+      - alert: S3SlowerHighErrorRate
+        expr: rate(s3slower_request_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          component: s3slower
+        annotations:
+          summary: "High S3 error rate detected"
+          description: "Error rate {{ $value }}/sec for {{ $labels.comm }} on {{ $labels.hostname }}"
+
+      - alert: S3SlowerExporterDown
+        expr: up{job="s3slower"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: s3slower
+        annotations:
+          summary: "S3Slower exporter is down"
+          description: "S3Slower Prometheus exporter has been unreachable for over 1 minute"
+
+      - alert: S3SlowerVeryHighLatency
+        expr: s3slower_request_duration_max_ms > 5000
+        for: 1m
+        labels:
+          severity: critical
+          component: s3slower
+        annotations:
+          summary: "Very high S3 latency detected"
+          description: "Max latency {{ $value }}ms for {{ $labels.comm }} {{ $labels.s3_operation }} on {{ $labels.hostname }}"

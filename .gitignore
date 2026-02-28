@@ -1,6 +1,8 @@
 # Build artifacts
 build/
 dist/
+*.rpm
+*.deb
 
 # Go
 *.exe
@@ -38,3 +40,5 @@ Thumbs.db
 
 # Claude Code
 .claude/
+step-by-step.md
+monitoring/DASHBOARD_SPEC.md

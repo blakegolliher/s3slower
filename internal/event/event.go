@@ -40,6 +40,9 @@ type S3Event struct {
 	// File descriptor for correlation
 	FD int32
 
+	// S3 traffic detection
+	IsS3Traffic bool
+
 	// Raw data sample (first bytes of request)
 	RawData []byte
 }
@@ -68,6 +71,9 @@ func (e *S3Event) ParseFromRaw(data []byte) {
 
 	// Extract bucket and endpoint
 	e.Bucket, e.Endpoint = http.ParseBucketEndpoint(host, path)
+
+	// Check for S3-specific headers (x-amz-*, AWS4-HMAC-SHA256)
+	e.IsS3Traffic = http.IsLikelyS3Traffic(data)
 
 	// Store raw data for debugging
 	if len(data) > 64 {
