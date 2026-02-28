@@ -45,7 +45,7 @@ type RawEvent struct {
 	IsPartial      uint8
 	ClientType     uint8
 	_              [2]byte // padding
-	Data            [256]byte
+	Data            [512]byte
 	RespData        [128]byte
 }
 

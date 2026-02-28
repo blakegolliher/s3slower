@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  prometheus:
+    image: docker.io/prom/prometheus:v2.51.0
+    container_name: s3slower-prometheus
+    network_mode: host
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:Z
+      - ./prometheus/rules:/etc/prometheus/rules:Z
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=120h"
+      - "--storage.tsdb.retention.size=10GB"
+      - "--web.listen-address=:9090"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+
+  grafana:
+    image: docker.io/grafana/grafana:10.4.1
+    container_name: s3slower-grafana
+    network_mode: host
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SERVER_HTTP_PORT=3000
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:Z
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:Z
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

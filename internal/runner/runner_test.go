@@ -137,6 +137,7 @@ func TestHandleEvent(t *testing.T) {
 			ResponseSize: 1024,
 			LatencyMs:    50.0,
 			Path:         "/my-bucket/key.txt",
+			IsS3Traffic:  true,
 		}
 
 		r.handleEvent(evt)
@@ -166,6 +167,7 @@ func TestHandleEvent(t *testing.T) {
 			ResponseSize: 2048,
 			LatencyMs:    100.0,
 			Path:         "/test-bucket/data.json",
+			IsS3Traffic:  true,
 		}
 
 		r.handleEvent(evt)
@@ -197,12 +199,14 @@ func TestHandleEvent(t *testing.T) {
 			Timestamp:    time.Now(),
 			PID:          12345,
 			Comm:         "aws",
+			ClientType:   "awscli",
 			Method:       "GET",
 			Operation:    "GetObject",
 			Bucket:       "metrics-bucket",
 			ResponseSize: 1024,
 			LatencyMs:    75.0,
 			Path:         "/metrics-bucket/file.txt",
+			IsS3Traffic:  true,
 		}
 
 		// Should not panic
@@ -294,9 +298,10 @@ func TestLoggingConfig(t *testing.T) {
 
 		// Write an event
 		evt := &event.S3Event{
-			Timestamp: time.Now(),
-			Method:    "GET",
-			Path:      "/bucket/key",
+			Timestamp:   time.Now(),
+			Method:      "GET",
+			Path:        "/bucket/key",
+			IsS3Traffic: true,
 		}
 		r.handleEvent(evt)
 		r.logger.Sync()
@@ -392,6 +397,7 @@ func BenchmarkHandleEvent(b *testing.B) {
 		ResponseSize: 1024,
 		LatencyMs:    50.0,
 		Path:         "/my-bucket/key.txt",
+		IsS3Traffic:  true,
 	}
 
 	b.ResetTimer()

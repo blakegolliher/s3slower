@@ -32,7 +32,7 @@ type latencyStats struct {
 }
 
 // DefaultLabels are the standard labels for all metrics.
-var DefaultLabels = []string{"hostname", "comm", "s3_operation", "method", "pid"}
+var DefaultLabels = []string{"hostname", "comm", "s3_operation", "method", "bucket", "endpoint"}
 
 // New creates a new Metrics instance with all counters/gauges/histograms.
 func New(extraLabels []string) *Metrics {
