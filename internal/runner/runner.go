@@ -90,13 +90,23 @@ type Runner struct {
 
 	// targetLabels maps PIDs to their target's Prometheus labels
 	targetLabels map[uint32]map[string]string
+
+	// hostname is the machine's hostname, used for Prometheus labels
+	hostname string
+
+	// localAddrs is the set of IPs and hostnames that identify this machine,
+	// used to filter out self-directed HTTP traffic (Grafana, Prometheus, etc.)
+	localAddrs map[string]bool
 }
 
 // New creates a new runner.
 func New(cfg Config) (*Runner, error) {
+	hn, _ := os.Hostname()
 	r := &Runner{
 		config:       cfg,
 		minLatencyMs: cfg.MinLatencyMs,
+		hostname:     hn,
+		localAddrs:   collectLocalAddrs(hn),
 	}
 
 	// Set up terminal output
@@ -401,13 +411,24 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // handleEvent processes a single event.
 func (r *Runner) handleEvent(evt *event.S3Event) {
-	r.debugf("Event: pid=%d method=%s op=%s bucket=%s latency=%.2fms",
-		evt.PID, evt.Method, evt.Operation, evt.Bucket, evt.LatencyMs)
+	r.debugf("Event: pid=%d method=%s op=%s bucket=%s endpoint=%s s3=%v latency=%.2fms",
+		evt.PID, evt.Method, evt.Operation, evt.Bucket, evt.Endpoint, evt.IsS3Traffic, evt.LatencyMs)
+
+	// Skip clearly non-HTTP traffic (no method, no bucket, no S3 markers)
+	if evt.Bucket == "" && evt.Operation == "UNKNOWN" && !evt.IsS3Traffic {
+		return
+	}
 
 	// Check against current min latency filter (from hot-reload)
 	minLatency := r.MinLatencyMs()
 	if minLatency > 0 && evt.LatencyMs < float64(minLatency) {
 		return // Skip events below the threshold
+	}
+
+	// Filter non-S3 traffic. The BPF captures ALL HTTP traffic system-wide
+	// including Prometheus scrapes, Grafana queries, OTel pushes, dnf, health checks.
+	if !r.isLikelyS3Event(evt) {
+		return
 	}
 
 	// Write to terminal
@@ -420,15 +441,15 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 		r.logger.WriteEvent(evt)
 	}
 
-	// Record metrics with label enrichment from target watcher
+	// Record Prometheus metrics
 	if r.metrics != nil {
-		hostname, _ := os.Hostname()
 		labels := map[string]string{
-			"hostname":     hostname,
-			"comm":         evt.Comm,
+			"hostname":     r.hostname,
+			"comm":         evt.ClientType,
 			"s3_operation": string(evt.Operation),
 			"method":       evt.Method,
-			"pid":          fmt.Sprintf("%d", evt.PID),
+			"bucket":       evt.Bucket,
+			"endpoint":     evt.Endpoint,
 		}
 
 		// Merge target-specific labels if this PID has been matched
@@ -461,6 +482,88 @@ func (r *Runner) startPrometheusServer() {
 	if err := r.exporter.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Prometheus server error: %v\n", err)
 	}
+}
+
+// isLikelyS3Event determines if an event is real S3 traffic vs internal HTTP noise.
+// With a 512-byte BPF capture buffer, x-amz-* headers are visible for all known
+// S3 clients. Traffic without these markers is almost certainly non-S3 HTTP.
+func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
+	// x-amz-* or AWS4-HMAC-SHA256 headers found = definitely S3
+	if evt.IsS3Traffic {
+		return true
+	}
+	// UNKNOWN operation = parser couldn't map to any S3 op (e.g., OTel POST /v1/metrics)
+	if evt.Operation == "UNKNOWN" {
+		return false
+	}
+	// Known S3 operation but no x-amz headers in buffer.
+	// Could be S3 with extremely long headers pushing x-amz past 512 bytes,
+	// or non-S3 HTTP whose path happens to look like an S3 operation
+	// (e.g., GET /rocky/... from dnf, GET /api/... from Grafana).
+	if evt.Endpoint == "" {
+		return false
+	}
+	// Reject traffic to this machine (Prometheus, Grafana, health checks)
+	if isLocalEndpoint(evt.Endpoint, r.localAddrs) {
+		return false
+	}
+	// Without S3 markers, only trust requests to IP-addressed endpoints.
+	// On-prem S3 endpoints use IPs (e.g., 172.200.203.3); non-S3 noise
+	// targets DNS hostnames (mirrors.rit.edu, pypi.org, etc.).
+	return endpointIsIP(evt.Endpoint)
+}
+
+// collectLocalAddrs builds a set of all IPs and hostnames that identify this machine.
+func collectLocalAddrs(hostname string) map[string]bool {
+	addrs := map[string]bool{
+		"127.0.0.1": true,
+		"::1":       true,
+		"localhost":  true,
+	}
+	if hostname != "" {
+		addrs[hostname] = true
+	}
+	// Add all interface IPs
+	if ifaces, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range ifaces {
+			if ipNet, ok := a.(*net.IPNet); ok {
+				addrs[ipNet.IP.String()] = true
+			}
+		}
+	}
+	// Reverse-resolve local IPs to discover DNS names pointing to this machine
+	// (e.g., 10.143.11.203 → var203.selab.vastdata.com)
+	snapshot := make([]string, 0, len(addrs))
+	for a := range addrs {
+		snapshot = append(snapshot, a)
+	}
+	for _, ip := range snapshot {
+		if names, err := net.LookupAddr(ip); err == nil {
+			for _, name := range names {
+				name = strings.TrimSuffix(name, ".")
+				addrs[name] = true
+			}
+		}
+	}
+	return addrs
+}
+
+// isLocalEndpoint checks if an endpoint (host or host:port) belongs to this machine.
+func isLocalEndpoint(endpoint string, localAddrs map[string]bool) bool {
+	host := endpoint
+	if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
+		host = endpoint[:idx]
+	}
+	return localAddrs[host]
+}
+
+// endpointIsIP checks if an endpoint's host portion is an IP address (not a DNS name).
+func endpointIsIP(endpoint string) bool {
+	host := endpoint
+	if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
+		host = endpoint[:idx]
+	}
+	return net.ParseIP(host) != nil
 }
 
 // debugf prints a debug message if debug mode is enabled.

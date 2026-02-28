@@ -27,7 +27,7 @@ type bpfEventT struct {
 	IsPartial       uint8
 	ClientType      uint8
 	Pad             [2]uint8
-	Data            [256]int8
+	Data            [512]int8
 	RespData        [128]int8
 	_               [4]byte
 }
@@ -47,7 +47,7 @@ type bpfReqInfoT struct {
 	Fd         uint32
 	ClientType uint8
 	Comm       [16]int8
-	Data       [256]int8
+	Data       [512]int8
 	_          [7]byte
 }
 

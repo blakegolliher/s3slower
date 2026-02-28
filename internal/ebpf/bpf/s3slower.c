@@ -9,7 +9,7 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // Data capture sizes
-#define MAX_DATA_SIZE 256
+#define MAX_DATA_SIZE 512
 #define MAX_RESP_SIZE 128
 #define HTTP_CHECK_SIZE 8
 #define TASK_COMM_LEN 16
