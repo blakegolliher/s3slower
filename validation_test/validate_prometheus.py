@@ -125,29 +125,25 @@ def main():
     print("\n--- Check 1: Capture vs Prometheus request counts ---",
           file=sys.stderr)
 
-    # Group captures by (pid, operation, method) - only for workload PIDs
+    # Group captures by (operation, bucket) - only for workload PIDs
     capture_counts = defaultdict(int)
     for cap in capture_entries:
         pid = cap.get("pid")
         if pid not in workload_pids:
             continue
-        key = (str(pid), cap.get("operation", ""), cap.get("method", ""))
+        key = (cap.get("operation", ""), cap.get("bucket", ""))
         capture_counts[key] += 1
 
-    # Group prometheus requests_total by (pid, s3_operation, method)
+    # Group prometheus requests_total by (s3_operation, bucket)
     prom_counts = {}
     for labels, value in prom_metrics.get("s3slower_requests_total", []):
-        key = (labels.get("pid", ""),
-               labels.get("s3_operation", ""),
-               labels.get("method", ""))
+        key = (labels.get("s3_operation", ""),
+               labels.get("bucket", ""))
         prom_counts[key] = value
 
     count_checks = []
     for key in sorted(set(capture_counts) | set(prom_counts)):
-        pid, op, method = key
-        # Skip PIDs not in workload
-        if pid.isdigit() and int(pid) not in workload_pids:
-            continue
+        op, bucket = key
 
         cap_count = capture_counts.get(key, 0)
         pm_count = prom_counts.get(key, 0)
@@ -157,16 +153,15 @@ def main():
             all_pass = False
 
         count_checks.append({
-            "pid": pid,
             "operation": op,
-            "method": method,
+            "bucket": bucket,
             "capture_count": cap_count,
             "prometheus_count": pm_count,
             "matched": matched,
         })
 
         status = "OK" if matched else "MISMATCH"
-        print(f"  {status}: pid={pid} {method} {op}: "
+        print(f"  {status}: {op} bucket={bucket}: "
               f"capture={cap_count} prom={pm_count}", file=sys.stderr)
 
     # ---------------------------------------------------------------
@@ -174,36 +169,32 @@ def main():
     # ---------------------------------------------------------------
     print("\n--- Check 2: Duration histograms ---", file=sys.stderr)
 
-    # Group by (s3_operation, method) from workload
+    # Group by s3_operation from workload
     workload_ops = set()
     for wl in successful_workload:
-        workload_ops.add((wl["operation"], wl["method"]))
+        workload_ops.add(wl["operation"])
 
     prom_histogram_counts = defaultdict(float)
     for labels, value in prom_metrics.get(
             "s3slower_request_duration_ms_count", []):
-        pid_str = labels.get("pid", "")
-        if pid_str.isdigit() and int(pid_str) in workload_pids:
-            op_key = (labels.get("s3_operation", ""),
-                      labels.get("method", ""))
-            prom_histogram_counts[op_key] += value
+        op_key = labels.get("s3_operation", "")
+        prom_histogram_counts[op_key] += value
 
     histogram_checks = []
-    for op, method in sorted(workload_ops):
-        count = prom_histogram_counts.get((op, method), 0)
+    for op in sorted(workload_ops):
+        count = prom_histogram_counts.get(op, 0)
         has_observations = count > 0
         if not has_observations:
             all_pass = False
 
         histogram_checks.append({
             "operation": op,
-            "method": method,
             "histogram_count": count,
             "has_observations": has_observations,
         })
 
         status = "OK" if has_observations else "MISSING"
-        print(f"  {status}: {method} {op}: "
+        print(f"  {status}: {op}: "
               f"histogram_count={count}", file=sys.stderr)
 
     # ---------------------------------------------------------------
@@ -219,13 +210,13 @@ def main():
         if w["method"] == "PUT" and w.get("size", 0) > 0
     ]
     if put_workloads:
-        put_pids = {str(w["pid"]) for w in put_workloads}
+        put_buckets = {w["bucket"] for w in put_workloads}
         total_req_bytes = sum(
             value
             for labels, value
             in prom_metrics.get("s3slower_request_bytes_total", [])
-            if labels.get("pid", "") in put_pids
-            and labels.get("method") == "PUT"
+            if labels.get("bucket", "") in put_buckets
+            and labels.get("s3_operation") in ("PUT_OBJECT", "MPU_PART")
         )
         has_bytes = total_req_bytes > 0
         if not has_bytes:
@@ -245,12 +236,12 @@ def main():
         w for w in successful_workload if w["operation"] == "GET_OBJECT"
     ]
     if get_workloads:
-        get_pids = {str(w["pid"]) for w in get_workloads}
+        get_buckets = {w["bucket"] for w in get_workloads}
         total_resp_bytes = sum(
             value
             for labels, value
             in prom_metrics.get("s3slower_response_bytes_total", [])
-            if labels.get("pid", "") in get_pids
+            if labels.get("bucket", "") in get_buckets
             and labels.get("s3_operation") == "GET_OBJECT"
         )
         has_bytes = total_resp_bytes > 0
@@ -274,22 +265,16 @@ def main():
 
     workload_op_counts = defaultdict(int)
     for wl in successful_workload:
-        key = (wl["operation"], wl["method"])
-        workload_op_counts[key] += 1
+        workload_op_counts[wl["operation"]] += 1
 
     prom_op_counts = defaultdict(float)
     for labels, value in prom_metrics.get("s3slower_requests_total", []):
-        pid_str = labels.get("pid", "")
-        if pid_str.isdigit() and int(pid_str) in workload_pids:
-            key = (labels.get("s3_operation", ""),
-                   labels.get("method", ""))
-            prom_op_counts[key] += value
+        prom_op_counts[labels.get("s3_operation", "")] += value
 
     workload_vs_prom = []
-    for key in sorted(set(workload_op_counts) | set(prom_op_counts)):
-        op, method = key
-        wl_count = workload_op_counts.get(key, 0)
-        pm_count = prom_op_counts.get(key, 0)
+    for op in sorted(set(workload_op_counts) | set(prom_op_counts)):
+        wl_count = workload_op_counts.get(op, 0)
+        pm_count = prom_op_counts.get(op, 0)
         # Prom count should be >= workload count (retries may add extras)
         matched = pm_count >= wl_count
         if not matched:
@@ -297,14 +282,13 @@ def main():
 
         workload_vs_prom.append({
             "operation": op,
-            "method": method,
             "workload_count": wl_count,
             "prometheus_count": pm_count,
             "matched": matched,
         })
 
         status = "OK" if matched else "MISMATCH"
-        print(f"  {status}: {method} {op}: "
+        print(f"  {status}: {op}: "
               f"workload={wl_count} prom={pm_count}", file=sys.stderr)
 
     # ---------------------------------------------------------------
