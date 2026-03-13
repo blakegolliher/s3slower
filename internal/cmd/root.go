@@ -4,6 +4,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -114,6 +115,17 @@ to enable metrics collection.`,
 				// Apply screen settings from config file
 				cfg.TableFormat = appCfg.Screen.TableFormat
 				cfg.MaxURLLength = appCfg.Screen.MaxURLLength
+
+				// Apply file driver settings from config file
+				if appCfg.File.SamplesPath != "" {
+					cfg.LogDir = filepath.Dir(appCfg.File.SamplesPath)
+				}
+				if appCfg.File.MaxSizeMB > 0 {
+					cfg.LogMaxSizeMB = appCfg.File.MaxSizeMB
+				}
+				if appCfg.File.MaxBackups > 0 {
+					cfg.LogMaxBackups = appCfg.File.MaxBackups
+				}
 			}
 
 			// Apply CLI flags (override config file)

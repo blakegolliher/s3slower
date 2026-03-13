@@ -162,6 +162,7 @@ type AppConfig struct {
 	PID          int              `yaml:"pid,omitempty"`
 	Debug        bool             `yaml:"debug"`
 	Prometheus   PrometheusConfig `yaml:"prometheus"`
+	File         FileConfig       `yaml:"file"`
 	Screen       ScreenConfig     `yaml:"screen"`
 }
 
@@ -169,6 +170,13 @@ type AppConfig struct {
 type PrometheusConfig struct {
 	Host string `yaml:"prom_exporter_host"`
 	Port int    `yaml:"prom_exporter_port"`
+}
+
+// FileConfig holds file driver (rotating log) settings.
+type FileConfig struct {
+	SamplesPath string `yaml:"samples_path"`
+	MaxBackups  int    `yaml:"max_backups"`
+	MaxSizeMB   int    `yaml:"max_size_mb"`
 }
 
 // ScreenConfig holds screen output settings.
@@ -204,6 +212,11 @@ func DefaultConfig() *AppConfig {
 		Prometheus: PrometheusConfig{
 			Host: "::",
 			Port: 9000,
+		},
+		File: FileConfig{
+			SamplesPath: "/var/log/s3slower/s3slower.log",
+			MaxBackups:  5,
+			MaxSizeMB:   100,
 		},
 		Screen: ScreenConfig{
 			TableFormat:  true,
