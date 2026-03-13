@@ -17,11 +17,8 @@ func TestNew(t *testing.T) {
 		assert.NotNil(t, m.RequestsTotal)
 		assert.NotNil(t, m.RequestErrorsTotal)
 		assert.NotNil(t, m.RequestDurationMs)
-		assert.NotNil(t, m.RequestDurationMin)
-		assert.NotNil(t, m.RequestDurationMax)
 		assert.NotNil(t, m.RequestBytesTotal)
 		assert.NotNil(t, m.ResponseBytesTotal)
-		assert.NotNil(t, m.PartialRequestsTotal)
 	})
 
 	t.Run("creates_metrics_with_extra_labels", func(t *testing.T) {
@@ -44,11 +41,11 @@ func TestRegister(t *testing.T) {
 			"hostname":     "test-host",
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
-			"method":       "GET",
+
 			"bucket":       "test-bucket",
 			"endpoint":     "http://localhost:9000",
 		}
-		m.RecordRequest(labels, 100.0, 1024, 2048, false, false)
+		m.RecordRequest(labels, 100.0, 1024, 2048, false)
 
 		// Try to gather metrics
 		mfs, err := reg.Gather()
@@ -78,12 +75,12 @@ func TestRecordRequest(t *testing.T) {
 			"hostname":     "test-host",
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
-			"method":       "GET",
+
 			"bucket":       "test-bucket",
 			"endpoint":     "http://localhost:9000",
 		}
 
-		m.RecordRequest(labels, 100.5, 1024, 2048, false, false)
+		m.RecordRequest(labels, 100.5, 1024, 2048, false)
 
 		// Verify counters incremented
 		counter, err := m.RequestsTotal.GetMetricWith(labels)
@@ -101,63 +98,18 @@ func TestRecordRequest(t *testing.T) {
 			"hostname":     "test-host",
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
-			"method":       "GET",
+
 			"bucket":       "test-bucket",
 			"endpoint":     "http://localhost:9000",
 		}
 
-		m.RecordRequest(labels, 500.0, 0, 0, true, false)
+		m.RecordRequest(labels, 500.0, 0, 0, true)
 
 		counter, err := m.RequestErrorsTotal.GetMetricWith(labels)
 		require.NoError(t, err)
 		assert.NotNil(t, counter)
 	})
 
-	t.Run("records_partial_request", func(t *testing.T) {
-		m := New(nil)
-
-		labels := prometheus.Labels{
-			"hostname":     "test-host",
-			"comm":         "aws",
-			"s3_operation": "PUT_OBJECT",
-			"method":       "PUT",
-			"bucket":       "test-bucket",
-			"endpoint":     "http://localhost:9000",
-		}
-
-		m.RecordRequest(labels, 50.0, 1024, 0, false, true)
-
-		counter, err := m.PartialRequestsTotal.GetMetricWith(labels)
-		require.NoError(t, err)
-		assert.NotNil(t, counter)
-	})
-
-	t.Run("tracks_min_max_latency", func(t *testing.T) {
-		m := New(nil)
-
-		labels := prometheus.Labels{
-			"hostname":     "test-host",
-			"comm":         "aws",
-			"s3_operation": "GET_OBJECT",
-			"method":       "GET",
-			"bucket":       "test-bucket",
-			"endpoint":     "http://localhost:9000",
-		}
-
-		// Record multiple requests with different latencies
-		m.RecordRequest(labels, 100.0, 0, 0, false, false)
-		m.RecordRequest(labels, 50.0, 0, 0, false, false)
-		m.RecordRequest(labels, 200.0, 0, 0, false, false)
-
-		// Verify min/max tracking
-		key := labelsToKey(labels)
-		m.mu.RLock()
-		stats := m.latencyMinMax[key]
-		m.mu.RUnlock()
-
-		assert.Equal(t, 50.0, stats.min)
-		assert.Equal(t, 200.0, stats.max)
-	})
 }
 
 // TestExporter tests the Exporter struct.
@@ -178,7 +130,7 @@ func TestExporter(t *testing.T) {
 
 // TestDefaultLabels tests the default label set.
 func TestDefaultLabels(t *testing.T) {
-	expected := []string{"hostname", "comm", "s3_operation", "method", "bucket", "endpoint"}
+	expected := []string{"hostname", "comm", "s3_operation", "bucket", "endpoint"}
 	assert.Equal(t, expected, DefaultLabels)
 }
 
@@ -189,14 +141,13 @@ func BenchmarkRecordRequest(b *testing.B) {
 		"hostname":     "test-host",
 		"comm":         "aws",
 		"s3_operation": "GET_OBJECT",
-		"method":       "GET",
 		"bucket":       "test-bucket",
 		"endpoint":     "http://localhost:9000",
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.RecordRequest(labels, float64(i%1000), 1024, 2048, false, false)
+		m.RecordRequest(labels, float64(i%1000), 1024, 2048, false)
 	}
 }
 
