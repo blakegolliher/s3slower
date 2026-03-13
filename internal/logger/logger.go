@@ -173,10 +173,10 @@ func (l *RotatingLogger) WriteEvent(e *event.S3Event) error {
 
 // formatEvent formats an event for the log file (with full key).
 func (l *RotatingLogger) formatEvent(e *event.S3Event) string {
-	return fmt.Sprintf("%s | %-6s | %-20s | %-30s | %10d | %10.2f | %s\n",
+	return fmt.Sprintf("%s | %-6s | %-40s | %-30s | %10d | %10.2f | %s\n",
 		e.Timestamp.Format("2006-01-02 15:04:05.000"),
 		e.Method,
-		truncateLog(e.Bucket, 20),
+		truncateLog(e.Bucket, 40),
 		truncateLog(e.Endpoint, 30),
 		e.ResponseSize,
 		e.LatencyMs,
@@ -189,7 +189,7 @@ func (l *RotatingLogger) WriteHeader() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	header := fmt.Sprintf("%s | %-6s | %-20s | %-30s | %10s | %10s | %s\n",
+	header := fmt.Sprintf("%s | %-6s | %-40s | %-30s | %10s | %10s | %s\n",
 		"TIMESTAMP              ",
 		"METHOD",
 		"BUCKET",
@@ -198,7 +198,7 @@ func (l *RotatingLogger) WriteHeader() error {
 		"LATENCY_MS",
 		"KEY",
 	)
-	separator := fmt.Sprintf("%s\n", strings.Repeat("-", 120))
+	separator := fmt.Sprintf("%s\n", strings.Repeat("-", 140))
 
 	_, err := l.currentFile.WriteString(header + separator)
 	return err
