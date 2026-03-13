@@ -103,11 +103,11 @@ data:
           description: "S3Slower exporter on {{ $labels.kubernetes_node_name }} has been down for more than 1 minute"
 
       - alert: S3SlowerVeryHighLatency
-        expr: s3slower_request_duration_max_ms > 5000
+        expr: histogram_quantile(0.99, rate(s3slower_request_duration_ms_bucket[5m])) > 5000
         for: 1m
         labels:
           severity: critical
           component: s3slower
         annotations:
           summary: "Very high S3 latency detected"
-          description: "Process {{ $labels.comm }} on {{ $labels.hostname }} has extremely high S3 {{ $labels.s3_operation }} latency of {{ $value }}ms" 
+          description: "p99 latency is {{ $value }}ms on {{ $labels.hostname }}" 

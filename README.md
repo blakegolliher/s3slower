@@ -184,14 +184,11 @@ When running with `--prometheus`, the following metrics are exported:
 |--------|------|-------------|
 | `s3slower_requests_total` | Counter | Total S3 requests |
 | `s3slower_request_errors_total` | Counter | Total request errors |
-| `s3slower_request_duration_ms` | Histogram | Request latency |
-| `s3slower_request_duration_min_ms` | Gauge | Minimum latency |
-| `s3slower_request_duration_max_ms` | Gauge | Maximum latency |
+| `s3slower_request_duration_ms` | Histogram | Request latency distribution |
 | `s3slower_request_bytes_total` | Counter | Total request bytes |
 | `s3slower_response_bytes_total` | Counter | Total response bytes |
-| `s3slower_partial_requests_total` | Counter | Multipart requests |
 
-Labels: `hostname`, `comm`, `s3_operation`, `method`, `pid`
+Labels: `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint`
 
 ## S3 Operation Detection
 
@@ -267,7 +264,6 @@ make ci           # CI pipeline
 │   ├── metrics/            # Prometheus exporter
 │   ├── runner/             # Main execution loop
 │   ├── terminal/           # Console output
-│   ├── utils/              # Utilities
 │   └── watcher/            # Process watching
 ├── k8s/                    # Kubernetes manifests
 ├── systemd/                # Systemd service file

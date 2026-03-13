@@ -54,11 +54,11 @@ groups:
           description: "S3Slower Prometheus exporter has been unreachable for over 1 minute"
 
       - alert: S3SlowerVeryHighLatency
-        expr: s3slower_request_duration_max_ms > 5000
+        expr: histogram_quantile(0.99, rate(s3slower_request_duration_ms_bucket[5m])) > 5000
         for: 1m
         labels:
           severity: critical
           component: s3slower
         annotations:
           summary: "Very high S3 latency detected"
-          description: "Max latency {{ $value }}ms for {{ $labels.comm }} {{ $labels.s3_operation }} on {{ $labels.hostname }}"
+          description: "p99 latency is {{ $value }}ms on {{ $labels.hostname }}"
