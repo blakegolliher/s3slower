@@ -139,12 +139,15 @@ func ParseBucketEndpoint(host, path string) (bucket, endpoint string) {
 	return "", host
 }
 
-// isIPAddress checks if the given string is an IP address (IPv4 or IPv6).
+// isIPAddress checks if the given string is an IP address (IPv4 or IPv6),
+// with or without a port suffix (e.g. "1.2.3.4:9000", "[::1]:9000").
 func isIPAddress(s string) bool {
-	if idx := strings.LastIndex(s, ":"); idx != -1 {
-		s = s[:idx]
+	// Try stripping port via net.SplitHostPort (handles IPv6 brackets)
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		return net.ParseIP(host) != nil
 	}
-	return net.ParseIP(s) != nil
+	// No port — try parsing directly (also strips brackets if present)
+	return net.ParseIP(strings.Trim(s, "[]")) != nil
 }
 
 // IsLikelyS3Traffic checks whether raw HTTP request data contains AWS S3
