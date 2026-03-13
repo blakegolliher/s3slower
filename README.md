@@ -8,13 +8,8 @@ eBPF-based S3 client latency monitoring tool. Traces HTTP requests and responses
 - **eBPF-based monitoring** - Minimal performance overhead (<1% CPU)
 - **No application changes required** - Works with any S3 client
 - **Prometheus metrics export** - Integration with monitoring infrastructure
-- **S3 operation detection** - GetObject, PutObject, multipart uploads, etc.
 - **Multiple TLS library support** - OpenSSL, GnuTLS, NSS, and plain HTTP
-- **Process watching** - Auto-attach to mc, warp, aws-cli, and other S3 clients
-- **RPM/DEB packaging** - Easy installation via package managers
 - **Systemd integration** - Enabled at boot automatically on RPM install
-- **Hot-reload configuration** - Update settings without restart
-- **Rotating file logging** - Configurable size limits and backup retention
 
 ## Requirements
 
@@ -58,7 +53,7 @@ sudo s3slower run
 sudo s3slower run --prometheus --port 9000
 
 # Watch specific processes
-sudo s3slower run --watch mc,warp
+sudo s3slower run --watch elbencho,awscli
 
 # Use a config file
 sudo s3slower run -C /etc/s3slower/s3slower.yaml
@@ -180,7 +175,7 @@ Both configuration files support hot-reloading. Changes take effect immediately 
 | `gnutls` | Uprobes on gnutls_record_send/recv | HTTPS via GnuTLS |
 | `nss` | Uprobes on PR_Read/PR_Write | HTTPS via NSS |
 
-In `auto` mode, s3slower also detects statically-linked binaries (e.g., elbencho, warp) that embed OpenSSL.
+In `auto` mode, s3slower also detects statically-linked binaries (e.g., elbencho, awcli) that embed OpenSSL.
 
 ## Terminal Output
 
@@ -247,10 +242,6 @@ sudo journalctl -u s3slower -f
 
 Configuration: `/etc/s3slower/s3slower.yaml`
 Log files: `/var/log/s3slower/`
-
-### Kubernetes
-
-See `k8s/` directory for DaemonSet, Service, and Prometheus scrape configurations.
 
 ## Development
 
@@ -321,13 +312,8 @@ Grafana dashboard is provisioned automatically from `monitoring/grafana/dashboar
 | BPF program load failed | Check kernel version (4.4+ required) |
 | No events captured | Verify S3 traffic exists; use `--debug` to inspect |
 | Missing TLS traffic | Check that OpenSSL/GnuTLS is detected (`--debug`) |
-| High CPU usage | Increase `--min-latency` to filter low-latency noise |
 
 ```bash
 # Debug mode shows probe attachment and event filtering details
 sudo s3slower run --debug
 ```
-
-## License
-
-Apache License 2.0
