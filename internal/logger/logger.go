@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -197,7 +198,7 @@ func (l *RotatingLogger) WriteHeader() error {
 		"LATENCY_MS",
 		"KEY",
 	)
-	separator := fmt.Sprintf("%s\n", repeatChar('-', 120))
+	separator := fmt.Sprintf("%s\n", strings.Repeat("-", 120))
 
 	_, err := l.currentFile.WriteString(header + separator)
 	return err
@@ -235,11 +236,3 @@ func truncateLog(s string, maxLen int) string {
 	return s[:maxLen]
 }
 
-// repeatChar repeats a character n times.
-func repeatChar(c rune, n int) string {
-	result := make([]rune, n)
-	for i := range result {
-		result[i] = c
-	}
-	return string(result)
-}

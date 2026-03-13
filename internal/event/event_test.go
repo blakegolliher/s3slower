@@ -195,103 +195,17 @@ func TestSetLatency(t *testing.T) {
 	}
 }
 
-// TestRequestCorrelator tests the RequestCorrelator struct.
-func TestRequestCorrelator(t *testing.T) {
-	t.Run("add_and_complete", func(t *testing.T) {
-		c := NewRequestCorrelator()
-		event := NewS3Event()
-		event.Method = "GET"
-
-		c.AddRequest(12345, 3, event)
-		assert.Equal(t, 1, c.Len())
-
-		result, ok := c.CompleteRequest(12345, 3)
-		assert.True(t, ok)
-		assert.Equal(t, "GET", result.Method)
-		assert.Equal(t, 0, c.Len())
-	})
-
-	t.Run("complete_missing_request", func(t *testing.T) {
-		c := NewRequestCorrelator()
-
-		result, ok := c.CompleteRequest(12345, 3)
-		assert.False(t, ok)
-		assert.Nil(t, result)
-	})
-
-	t.Run("get_pending", func(t *testing.T) {
-		c := NewRequestCorrelator()
-		event := NewS3Event()
-		event.Method = "PUT"
-
-		c.AddRequest(12345, 5, event)
-
-		result, ok := c.GetPending(12345, 5)
-		assert.True(t, ok)
-		assert.Equal(t, "PUT", result.Method)
-
-		// Should still be there
-		assert.Equal(t, 1, c.Len())
-	})
-
-	t.Run("different_pid_fd_pairs", func(t *testing.T) {
-		c := NewRequestCorrelator()
-
-		event1 := NewS3Event()
-		event1.Method = "GET"
-
-		event2 := NewS3Event()
-		event2.Method = "PUT"
-
-		c.AddRequest(12345, 3, event1)
-		c.AddRequest(12345, 4, event2)
-		c.AddRequest(67890, 3, &S3Event{Method: "DELETE"})
-
-		assert.Equal(t, 3, c.Len())
-
-		r1, ok := c.CompleteRequest(12345, 3)
-		assert.True(t, ok)
-		assert.Equal(t, "GET", r1.Method)
-
-		r2, ok := c.CompleteRequest(12345, 4)
-		assert.True(t, ok)
-		assert.Equal(t, "PUT", r2.Method)
-
-		r3, ok := c.CompleteRequest(67890, 3)
-		assert.True(t, ok)
-		assert.Equal(t, "DELETE", r3.Method)
-	})
-
-	t.Run("cleanup_stale", func(t *testing.T) {
-		c := NewRequestCorrelator()
-
-		// Add a request
-		event := NewS3Event()
-		c.AddRequest(12345, 3, event)
-
-		// Cleanup with short max age shouldn't remove anything yet
-		removed := c.CleanupStale(time.Hour)
-		assert.Equal(t, 0, removed)
-		assert.Equal(t, 1, c.Len())
-
-		// Cleanup with zero max age should remove everything
-		removed = c.CleanupStale(0)
-		assert.Equal(t, 1, removed)
-		assert.Equal(t, 0, c.Len())
-	})
-}
-
 // TestEventProcessor tests the EventProcessor struct.
 func TestEventProcessor(t *testing.T) {
 	t.Run("creates_processor", func(t *testing.T) {
-		p := NewEventProcessor(0, 100)
+		p := NewEventProcessor(100)
 
 		assert.NotNil(t, p)
 		assert.NotNil(t, p.Events())
 	})
 
 	t.Run("send_event", func(t *testing.T) {
-		p := NewEventProcessor(0, 100)
+		p := NewEventProcessor(100)
 
 		evt := NewS3Event()
 		evt.Method = "GET"
@@ -309,7 +223,7 @@ func TestEventProcessor(t *testing.T) {
 	})
 
 	t.Run("send_event_full_channel", func(t *testing.T) {
-		p := NewEventProcessor(0, 1) // buffer size 1
+		p := NewEventProcessor(1) // buffer size 1
 
 		evt1 := NewS3Event()
 		evt1.Method = "GET"
@@ -324,7 +238,7 @@ func TestEventProcessor(t *testing.T) {
 	})
 
 	t.Run("close", func(t *testing.T) {
-		p := NewEventProcessor(0, 100)
+		p := NewEventProcessor(100)
 		p.Close()
 
 		// Channel should be closed
@@ -344,17 +258,3 @@ func BenchmarkParseFromRaw(b *testing.B) {
 	}
 }
 
-// BenchmarkRequestCorrelator benchmarks request correlation.
-func BenchmarkRequestCorrelator(b *testing.B) {
-	c := NewRequestCorrelator()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		event := NewS3Event()
-		pid := uint32(i % 1000)
-		fd := int32(i % 10)
-
-		c.AddRequest(pid, fd, event)
-		c.CompleteRequest(pid, fd)
-	}
-}
