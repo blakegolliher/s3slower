@@ -3,6 +3,8 @@ package metrics
 
 import (
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -162,25 +164,20 @@ func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, re
 }
 
 func labelsToKey(labels prometheus.Labels) string {
-	// Sort keys for consistent ordering
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
 		keys = append(keys, k)
 	}
-	// Simple bubble sort for small number of keys
-	for i := 0; i < len(keys); i++ {
-		for j := i + 1; j < len(keys); j++ {
-			if keys[i] > keys[j] {
-				keys[i], keys[j] = keys[j], keys[i]
-			}
-		}
-	}
-	// Build key string
-	key := ""
+	sort.Strings(keys)
+
+	var b strings.Builder
 	for _, k := range keys {
-		key += k + "=" + labels[k] + ";"
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(labels[k])
+		b.WriteByte(';')
 	}
-	return key
+	return b.String()
 }
 
 // Exporter manages the Prometheus HTTP server.
