@@ -1,4 +1,5 @@
 # S3Slower Configuration File
+# Documentation: https://github.com/s3slower/s3slower
 
 # Minimum latency threshold in milliseconds
 # Only capture operations slower than this threshold (0 = capture all)
@@ -16,7 +17,15 @@ prometheus:
   prom_exporter_host: "::"  # Listen on all interfaces
   prom_exporter_port: 9000
 
-# Console output settings
+# File driver
+# Stores captured S3 operations to a local log file with rotation.
+file:
+  samples_path: /var/log/s3slower/s3slower.log  # Path to the log file
+  max_backups: 5                                 # Maximum number of backups to retain
+  max_size_mb: 100                               # Maximum file size in MB before rollover
+
+# Screen driver
+# Outputs statistics directly to the console (when running in foreground).
 screen:
-  table_format: true
-  max_url_length: 50
+  table_format: true    # Display statistics in a tabular format
+  max_url_length: 50    # Truncate URLs longer than this in table output
