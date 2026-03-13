@@ -95,90 +95,15 @@ func (e *S3Event) SetLatency(latencyUs uint64) {
 	e.LatencyMs = float64(latencyUs) / 1000.0
 }
 
-// RequestCorrelator tracks in-flight requests for response matching.
-type RequestCorrelator struct {
-	requests map[requestKey]*pendingRequest
-}
-
-type requestKey struct {
-	pid uint32
-	fd  int32
-}
-
-type pendingRequest struct {
-	event     *S3Event
-	startTime time.Time
-}
-
-// NewRequestCorrelator creates a new RequestCorrelator.
-func NewRequestCorrelator() *RequestCorrelator {
-	return &RequestCorrelator{
-		requests: make(map[requestKey]*pendingRequest),
-	}
-}
-
-// AddRequest adds a pending request.
-func (c *RequestCorrelator) AddRequest(pid uint32, fd int32, event *S3Event) {
-	key := requestKey{pid: pid, fd: fd}
-	c.requests[key] = &pendingRequest{
-		event:     event,
-		startTime: time.Now(),
-	}
-}
-
-// CompleteRequest completes a pending request and returns the event.
-func (c *RequestCorrelator) CompleteRequest(pid uint32, fd int32) (*S3Event, bool) {
-	key := requestKey{pid: pid, fd: fd}
-	pending, ok := c.requests[key]
-	if !ok {
-		return nil, false
-	}
-
-	delete(c.requests, key)
-	return pending.event, true
-}
-
-// GetPending returns the pending request for a PID/FD pair.
-func (c *RequestCorrelator) GetPending(pid uint32, fd int32) (*S3Event, bool) {
-	key := requestKey{pid: pid, fd: fd}
-	pending, ok := c.requests[key]
-	if !ok {
-		return nil, false
-	}
-	return pending.event, true
-}
-
-// CleanupStale removes requests older than the given duration.
-func (c *RequestCorrelator) CleanupStale(maxAge time.Duration) int {
-	now := time.Now()
-	removed := 0
-
-	for key, pending := range c.requests {
-		if now.Sub(pending.startTime) > maxAge {
-			delete(c.requests, key)
-			removed++
-		}
-	}
-
-	return removed
-}
-
-// Len returns the number of pending requests.
-func (c *RequestCorrelator) Len() int {
-	return len(c.requests)
-}
-
 // EventProcessor handles incoming BPF events and produces S3Events.
 type EventProcessor struct {
-	minLatency time.Duration
-	eventChan  chan *S3Event
+	eventChan chan *S3Event
 }
 
 // NewEventProcessor creates a new EventProcessor.
-func NewEventProcessor(minLatency time.Duration, bufferSize int) *EventProcessor {
+func NewEventProcessor(bufferSize int) *EventProcessor {
 	return &EventProcessor{
-		minLatency: minLatency,
-		eventChan:  make(chan *S3Event, bufferSize),
+		eventChan: make(chan *S3Event, bufferSize),
 	}
 }
 

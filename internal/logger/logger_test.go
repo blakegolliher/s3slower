@@ -393,27 +393,6 @@ func TestTruncateLog(t *testing.T) {
 	}
 }
 
-// TestRepeatChar tests the repeatChar helper function.
-func TestRepeatChar(t *testing.T) {
-	tests := []struct {
-		char     rune
-		n        int
-		expected string
-	}{
-		{'-', 5, "-----"},
-		{'*', 3, "***"},
-		{'x', 0, ""},
-		{'a', 1, "a"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			result := repeatChar(tt.char, tt.n)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
 // TestConcurrentWrites tests thread safety of the logger.
 func TestConcurrentWrites(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -3,6 +3,7 @@ package http
 
 import (
 	"bytes"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -138,27 +139,12 @@ func ParseBucketEndpoint(host, path string) (bucket, endpoint string) {
 	return "", host
 }
 
-// isIPAddress checks if the given string is an IPv4 address.
+// isIPAddress checks if the given string is an IP address (IPv4 or IPv6).
 func isIPAddress(s string) bool {
-	// Remove port if present
 	if idx := strings.LastIndex(s, ":"); idx != -1 {
 		s = s[:idx]
 	}
-	parts := strings.Split(s, ".")
-	if len(parts) != 4 {
-		return false
-	}
-	for _, p := range parts {
-		if p == "" {
-			return false
-		}
-		for _, c := range p {
-			if c < '0' || c > '9' {
-				return false
-			}
-		}
-	}
-	return true
+	return net.ParseIP(s) != nil
 }
 
 // IsLikelyS3Traffic checks whether raw HTTP request data contains AWS S3

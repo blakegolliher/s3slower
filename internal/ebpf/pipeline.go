@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/s3slower/s3slower/internal/event"
 )
@@ -61,10 +60,7 @@ func NewPipeline(config PipelineConfig) (*Pipeline, error) {
 		bufferSize = 100
 	}
 
-	processor := event.NewEventProcessor(
-		time.Duration(minLatencyUs)*time.Microsecond,
-		bufferSize,
-	)
+	processor := event.NewEventProcessor(bufferSize)
 
 	return &Pipeline{
 		tracer:        tracer,
@@ -89,10 +85,7 @@ func NewPipelineWithMock(config PipelineConfig) (*Pipeline, error) {
 		bufferSize = 100
 	}
 
-	processor := event.NewEventProcessor(
-		time.Duration(minLatencyUs)*time.Microsecond,
-		bufferSize,
-	)
+	processor := event.NewEventProcessor(bufferSize)
 
 	return &Pipeline{
 		tracer:        tracer,
