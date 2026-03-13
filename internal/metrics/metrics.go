@@ -3,9 +3,6 @@ package metrics
 
 import (
 	"net/http"
-	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -14,27 +11,15 @@ import (
 
 // Metrics holds all Prometheus metrics for s3slower.
 type Metrics struct {
-	RequestsTotal       *prometheus.CounterVec
-	RequestErrorsTotal  *prometheus.CounterVec
-	RequestDurationMs   *prometheus.HistogramVec
-	RequestDurationMin  *prometheus.GaugeVec
-	RequestDurationMax  *prometheus.GaugeVec
-	RequestBytesTotal   *prometheus.CounterVec
-	ResponseBytesTotal  *prometheus.CounterVec
-	PartialRequestsTotal *prometheus.CounterVec
-
-	// Internal tracking
-	mu             sync.RWMutex
-	latencyMinMax  map[string]*latencyStats
-}
-
-type latencyStats struct {
-	min float64
-	max float64
+	RequestsTotal      *prometheus.CounterVec
+	RequestErrorsTotal *prometheus.CounterVec
+	RequestDurationMs  *prometheus.HistogramVec
+	RequestBytesTotal  *prometheus.CounterVec
+	ResponseBytesTotal *prometheus.CounterVec
 }
 
 // DefaultLabels are the standard labels for all metrics.
-var DefaultLabels = []string{"hostname", "comm", "s3_operation", "method", "bucket", "endpoint"}
+var DefaultLabels = []string{"hostname", "comm", "s3_operation", "bucket", "endpoint"}
 
 // New creates a new Metrics instance with all counters/gauges/histograms.
 func New(extraLabels []string) *Metrics {
@@ -63,20 +48,6 @@ func New(extraLabels []string) *Metrics {
 			},
 			labels,
 		),
-		RequestDurationMin: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "s3slower_request_duration_min_ms",
-				Help: "Minimum request duration in milliseconds",
-			},
-			labels,
-		),
-		RequestDurationMax: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "s3slower_request_duration_max_ms",
-				Help: "Maximum request duration in milliseconds",
-			},
-			labels,
-		),
 		RequestBytesTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "s3slower_request_bytes_total",
@@ -91,14 +62,6 @@ func New(extraLabels []string) *Metrics {
 			},
 			labels,
 		),
-		PartialRequestsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "s3slower_partial_requests_total",
-				Help: "Total number of partial/multipart requests",
-			},
-			labels,
-		),
-		latencyMinMax: make(map[string]*latencyStats),
 	}
 
 	return m
@@ -110,11 +73,8 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 		m.RequestsTotal,
 		m.RequestErrorsTotal,
 		m.RequestDurationMs,
-		m.RequestDurationMin,
-		m.RequestDurationMax,
 		m.RequestBytesTotal,
 		m.ResponseBytesTotal,
-		m.PartialRequestsTotal,
 	}
 
 	for _, c := range collectors {
@@ -127,7 +87,7 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 }
 
 // RecordRequest records a single S3 request.
-func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, reqBytes, respBytes int64, isError, isPartial bool) {
+func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, reqBytes, respBytes int64, isError bool) {
 	m.RequestsTotal.With(labels).Inc()
 	m.RequestDurationMs.With(labels).Observe(durationMs)
 	m.RequestBytesTotal.With(labels).Add(float64(reqBytes))
@@ -136,48 +96,6 @@ func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, re
 	if isError {
 		m.RequestErrorsTotal.With(labels).Inc()
 	}
-
-	if isPartial {
-		m.PartialRequestsTotal.With(labels).Inc()
-	}
-
-	// Track min/max
-	key := labelsToKey(labels)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	stats, ok := m.latencyMinMax[key]
-	if !ok {
-		stats = &latencyStats{min: durationMs, max: durationMs}
-		m.latencyMinMax[key] = stats
-	} else {
-		if durationMs < stats.min {
-			stats.min = durationMs
-		}
-		if durationMs > stats.max {
-			stats.max = durationMs
-		}
-	}
-
-	m.RequestDurationMin.With(labels).Set(stats.min)
-	m.RequestDurationMax.With(labels).Set(stats.max)
-}
-
-func labelsToKey(labels prometheus.Labels) string {
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(labels[k])
-		b.WriteByte(';')
-	}
-	return b.String()
 }
 
 // Exporter manages the Prometheus HTTP server.

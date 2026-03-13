@@ -447,7 +447,6 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 			"hostname":     r.hostname,
 			"comm":         evt.ClientType,
 			"s3_operation": string(evt.Operation),
-			"method":       evt.Method,
 			"bucket":       evt.Bucket,
 			"endpoint":     evt.Endpoint,
 		}
@@ -467,7 +466,6 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 			int64(evt.RequestSize),
 			int64(evt.ResponseSize),
 			evt.IsError,
-			evt.IsPartial,
 		)
 	}
 }
