@@ -129,7 +129,7 @@ func ParseBucketEndpoint(host, path string) (bucket, endpoint string) {
 	// Virtual-host-style: bucket.s3.amazonaws.com or bucket.endpoint
 	// Only used when path doesn't contain a bucket
 	// Skip if host is an IP address
-	if strings.Contains(host, ".") && !isIPAddress(host) {
+	if strings.Contains(host, ".") && !IsIPAddress(host) {
 		parts := strings.SplitN(host, ".", 2)
 		if len(parts) == 2 {
 			return parts[0], parts[1]
@@ -139,9 +139,9 @@ func ParseBucketEndpoint(host, path string) (bucket, endpoint string) {
 	return "", host
 }
 
-// isIPAddress checks if the given string is an IP address (IPv4 or IPv6),
+// IsIPAddress checks if the given string is an IP address (IPv4 or IPv6),
 // with or without a port suffix (e.g. "1.2.3.4:9000", "[::1]:9000").
-func isIPAddress(s string) bool {
+func IsIPAddress(s string) bool {
 	// Try stripping port via net.SplitHostPort (handles IPv6 brackets)
 	if host, _, err := net.SplitHostPort(s); err == nil {
 		return net.ParseIP(host) != nil
@@ -199,6 +199,16 @@ const (
 	OpUnknown        S3Operation = "UNKNOWN"
 )
 
+// isBucketOnlyPath returns true if the path contains only a bucket name
+// (single path segment with no key), after stripping the query string.
+func isBucketOnlyPath(path string) bool {
+	if idx := strings.Index(path, "?"); idx != -1 {
+		path = path[:idx]
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	return len(parts) == 1 && parts[0] != ""
+}
+
 // DetectS3Operation determines the S3 operation from method and path.
 func DetectS3Operation(method, path string) S3Operation {
 	pathLower := strings.ToLower(path)
@@ -217,13 +227,7 @@ func DetectS3Operation(method, path string) S3Operation {
 		if strings.Contains(pathLower, "partnumber=") {
 			return OpMPUPart
 		}
-		// Check if this is a bucket-only path (no key)
-		pathPart := path
-		if idx := strings.Index(path, "?"); idx != -1 {
-			pathPart = path[:idx]
-		}
-		parts := strings.Split(strings.Trim(pathPart, "/"), "/")
-		if len(parts) == 1 && parts[0] != "" {
+		if isBucketOnlyPath(path) {
 			return OpCreateBucket
 		}
 		return OpPutObject
@@ -241,23 +245,13 @@ func DetectS3Operation(method, path string) S3Operation {
 		if strings.Contains(pathLower, "uploadid=") {
 			return OpMPUAbort
 		}
-		pathPart := path
-		if idx := strings.Index(path, "?"); idx != -1 {
-			pathPart = path[:idx]
-		}
-		parts := strings.Split(strings.Trim(pathPart, "/"), "/")
-		if len(parts) == 1 && parts[0] != "" {
+		if isBucketOnlyPath(path) {
 			return OpDeleteBucket
 		}
 		return OpDeleteObject
 
 	case MethodHEAD:
-		pathPart := path
-		if idx := strings.Index(path, "?"); idx != -1 {
-			pathPart = path[:idx]
-		}
-		parts := strings.Split(strings.Trim(pathPart, "/"), "/")
-		if len(parts) == 1 && parts[0] != "" {
+		if isBucketOnlyPath(path) {
 			return OpHeadBucket
 		}
 		return OpHeadObject

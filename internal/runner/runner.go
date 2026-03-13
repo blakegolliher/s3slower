@@ -15,6 +15,7 @@ import (
 	"github.com/s3slower/s3slower/internal/config"
 	"github.com/s3slower/s3slower/internal/ebpf"
 	"github.com/s3slower/s3slower/internal/event"
+	httputil "github.com/s3slower/s3slower/internal/http"
 	"github.com/s3slower/s3slower/internal/logger"
 	"github.com/s3slower/s3slower/internal/metrics"
 	"github.com/s3slower/s3slower/internal/terminal"
@@ -508,7 +509,7 @@ func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
 	// Without S3 markers, only trust requests to IP-addressed endpoints.
 	// On-prem S3 endpoints use IPs (e.g., 172.200.203.3); non-S3 noise
 	// targets DNS hostnames (mirrors.rit.edu, pypi.org, etc.).
-	return endpointIsIP(evt.Endpoint)
+	return httputil.IsIPAddress(evt.Endpoint)
 }
 
 // collectLocalAddrs builds a set of all IPs and hostnames that identify this machine.
@@ -553,15 +554,6 @@ func isLocalEndpoint(endpoint string, localAddrs map[string]bool) bool {
 		host = endpoint[:idx]
 	}
 	return localAddrs[host]
-}
-
-// endpointIsIP checks if an endpoint's host portion is an IP address (not a DNS name).
-func endpointIsIP(endpoint string) bool {
-	host := endpoint
-	if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
-		host = endpoint[:idx]
-	}
-	return net.ParseIP(host) != nil
 }
 
 // debugf prints a debug message if debug mode is enabled.
