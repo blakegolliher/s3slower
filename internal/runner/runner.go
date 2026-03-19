@@ -467,6 +467,7 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 			int64(evt.RequestSize),
 			int64(evt.ResponseSize),
 			evt.IsError,
+			evt.StatusCode,
 		)
 	}
 }
