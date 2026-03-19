@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -16,6 +17,7 @@ type Metrics struct {
 	RequestDurationMs  *prometheus.HistogramVec
 	RequestBytesTotal  *prometheus.CounterVec
 	ResponseBytesTotal *prometheus.CounterVec
+	ResponseStatusTotal *prometheus.CounterVec
 }
 
 // DefaultLabels are the standard labels for all metrics.
@@ -62,6 +64,13 @@ func New(extraLabels []string) *Metrics {
 			},
 			labels,
 		),
+		ResponseStatusTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "s3slower_response_status_total",
+				Help: "Total S3 responses by bucket and HTTP status code",
+			},
+			[]string{"bucket", "status_code"},
+		),
 	}
 
 	return m
@@ -75,6 +84,7 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 		m.RequestDurationMs,
 		m.RequestBytesTotal,
 		m.ResponseBytesTotal,
+		m.ResponseStatusTotal,
 	}
 
 	for _, c := range collectors {
@@ -87,7 +97,7 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 }
 
 // RecordRequest records a single S3 request.
-func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, reqBytes, respBytes int64, isError bool) {
+func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, reqBytes, respBytes int64, isError bool, statusCode int) {
 	m.RequestsTotal.With(labels).Inc()
 	m.RequestDurationMs.With(labels).Observe(durationMs)
 	m.RequestBytesTotal.With(labels).Add(float64(reqBytes))
@@ -95,6 +105,13 @@ func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, re
 
 	if isError {
 		m.RequestErrorsTotal.With(labels).Inc()
+	}
+
+	if statusCode > 0 {
+		m.ResponseStatusTotal.With(prometheus.Labels{
+			"bucket":      labels["bucket"],
+			"status_code": strconv.Itoa(statusCode),
+		}).Inc()
 	}
 }
 
