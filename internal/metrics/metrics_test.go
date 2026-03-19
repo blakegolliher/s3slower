@@ -45,7 +45,7 @@ func TestRegister(t *testing.T) {
 			"bucket":       "test-bucket",
 			"endpoint":     "http://localhost:9000",
 		}
-		m.RecordRequest(labels, 100.0, 1024, 2048, false)
+		m.RecordRequest(labels, 100.0, 1024, 2048, false, 200)
 
 		// Try to gather metrics
 		mfs, err := reg.Gather()
@@ -80,7 +80,7 @@ func TestRecordRequest(t *testing.T) {
 			"endpoint":     "http://localhost:9000",
 		}
 
-		m.RecordRequest(labels, 100.5, 1024, 2048, false)
+		m.RecordRequest(labels, 100.5, 1024, 2048, false, 200)
 
 		// Verify counters incremented
 		counter, err := m.RequestsTotal.GetMetricWith(labels)
@@ -103,7 +103,7 @@ func TestRecordRequest(t *testing.T) {
 			"endpoint":     "http://localhost:9000",
 		}
 
-		m.RecordRequest(labels, 500.0, 0, 0, true)
+		m.RecordRequest(labels, 500.0, 0, 0, true, 503)
 
 		counter, err := m.RequestErrorsTotal.GetMetricWith(labels)
 		require.NoError(t, err)
@@ -147,7 +147,7 @@ func BenchmarkRecordRequest(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.RecordRequest(labels, float64(i%1000), 1024, 2048, false)
+		m.RecordRequest(labels, float64(i%1000), 1024, 2048, false, 200)
 	}
 }
 

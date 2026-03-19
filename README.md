@@ -193,17 +193,26 @@ Output formats: `table` (default), `simple`, `json`
 
 When running with `--prometheus`, the following metrics are exported on `/metrics`:
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `s3slower_requests_total` | Counter | Total S3 requests |
-| `s3slower_request_errors_total` | Counter | Total request errors (HTTP 4xx/5xx) |
-| `s3slower_request_duration_ms` | Histogram | Request latency distribution |
-| `s3slower_request_bytes_total` | Counter | Total request (upload) bytes |
-| `s3slower_response_bytes_total` | Counter | Total response (download) bytes |
-
-Labels: `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint`
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `s3slower_requests_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total S3 requests |
+| `s3slower_request_errors_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total request errors (HTTP 4xx/5xx) |
+| `s3slower_request_duration_ms` | Histogram | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Request latency distribution |
+| `s3slower_request_bytes_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total request (upload) bytes |
+| `s3slower_response_bytes_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total response (download) bytes |
+| `s3slower_response_status_total` | Counter | `bucket`, `status_code` | Response count by bucket and HTTP status code |
 
 Histogram buckets: 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms
+
+The `s3slower_response_status_total` metric tracks every HTTP status code per bucket, enabling queries like:
+
+```promql
+# 5xx error rate per bucket over the last 5 minutes
+rate(s3slower_response_status_total{status_code=~"5.."}[5m])
+
+# Breakdown of all status codes for a specific bucket
+s3slower_response_status_total{bucket="my-bucket"}
+```
 
 ## S3 Operation Detection
 
