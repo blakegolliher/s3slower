@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ENDPOINT="https://172.200.202.1"
-BUCKET="ciscowritetput"
+BUCKET="$bucket"
 LOG="s3_ops.log"
 
 aws_cmd() {
