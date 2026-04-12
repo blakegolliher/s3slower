@@ -183,7 +183,11 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.EnablePrometheus {
 		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
 		extraLabels := config.CollectExtraLabelKeys(r.targets)
-		r.exporter = metrics.NewExporter(addr, extraLabels)
+		exporter, err := metrics.NewExporter(addr, extraLabels)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create prometheus exporter: %w", err)
+		}
+		r.exporter = exporter
 		r.metrics = r.exporter.Metrics()
 	}
 
@@ -383,6 +387,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	// Main event loop
 	for {
@@ -396,9 +401,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			return nil
 
 		case <-cleanupTicker.C:
-			if r.targetWatcher != nil {
-				r.targetWatcher.CleanupExited()
-				r.debugf("Cleanup: %d attached PIDs", len(r.targetWatcher.GetAttached()))
+			r.mu.RLock()
+			tw := r.targetWatcher
+			r.mu.RUnlock()
+			if tw != nil {
+				tw.CleanupExited()
+				r.debugf("Cleanup: %d attached PIDs", len(tw.GetAttached()))
 			}
 
 		case evt, ok := <-r.pipeline.Events():
@@ -566,6 +574,9 @@ func (r *Runner) debugf(format string, args ...interface{}) {
 
 // Close cleans up resources.
 func (r *Runner) Close() error {
+	if r.exporter != nil {
+		r.exporter.Stop()
+	}
 	if r.targetWatcher != nil {
 		r.targetWatcher.Stop()
 	}
