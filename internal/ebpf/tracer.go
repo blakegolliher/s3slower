@@ -26,6 +26,7 @@ const (
 // BPFTracer implements the Tracer interface using cilium/ebpf.
 type BPFTracer struct {
 	mu sync.RWMutex
+	wg sync.WaitGroup
 
 	spec       *ebpf.CollectionSpec
 	collection *ebpf.Collection
@@ -389,6 +390,7 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 	t.mu.Unlock()
 
 	// Start reading events in a goroutine
+	t.wg.Add(1)
 	go t.readEvents()
 
 	return nil
@@ -396,6 +398,7 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 
 // readEvents reads events from the perf buffer.
 func (t *BPFTracer) readEvents() {
+	defer t.wg.Done()
 	for {
 		select {
 		case <-t.stopCh:
@@ -452,12 +455,11 @@ func parseRawEvent(data []byte) (*RawEvent, error) {
 	return event, nil
 }
 
-// Stop stops reading events.
+// Stop stops reading events and waits for the reader goroutine to exit.
 func (t *BPFTracer) Stop() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if !t.running {
+		t.mu.Unlock()
 		return
 	}
 
@@ -466,7 +468,12 @@ func (t *BPFTracer) Stop() {
 
 	if t.reader != nil {
 		t.reader.Close()
+		t.reader = nil
 	}
+	t.mu.Unlock()
+
+	// Wait for readEvents goroutine to finish
+	t.wg.Wait()
 }
 
 // Stats returns current probe statistics.

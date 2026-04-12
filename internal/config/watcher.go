@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -155,7 +156,7 @@ func (cw *ConfigWatcher) watch() {
 				return
 			}
 			// Log error but continue watching
-			fmt.Printf("Config watcher error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Config watcher error: %v\n", err)
 		}
 	}
 }
@@ -168,7 +169,7 @@ func (cw *ConfigWatcher) reloadAppConfig() {
 
 	cfg, err := LoadAppConfig(cw.configPath)
 	if err != nil {
-		fmt.Printf("Failed to reload app config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to reload app config: %v\n", err)
 		return
 	}
 
@@ -177,7 +178,7 @@ func (cw *ConfigWatcher) reloadAppConfig() {
 	callback := cw.onAppConfigChange
 	cw.mu.Unlock()
 
-	fmt.Printf("Reloaded app config from %s\n", cw.configPath)
+	fmt.Fprintf(os.Stderr, "Reloaded app config from %s\n", cw.configPath)
 
 	if callback != nil {
 		callback(cfg)
@@ -192,7 +193,7 @@ func (cw *ConfigWatcher) reloadTargets() {
 
 	targets, err := LoadTargets(cw.targetsPath)
 	if err != nil {
-		fmt.Printf("Failed to reload targets config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to reload targets config: %v\n", err)
 		return
 	}
 
@@ -201,7 +202,7 @@ func (cw *ConfigWatcher) reloadTargets() {
 	callback := cw.onTargetsChange
 	cw.mu.Unlock()
 
-	fmt.Printf("Reloaded %d targets from %s\n", len(targets), cw.targetsPath)
+	fmt.Fprintf(os.Stderr, "Reloaded %d targets from %s\n", len(targets), cw.targetsPath)
 
 	if callback != nil {
 		callback(targets)

@@ -175,7 +175,7 @@ func (p *Pipeline) attachProbes() error {
 		for mode, path := range libs {
 			if err := p.tracer.AttachUprobes(path, mode); err != nil {
 				// Log but don't fail - some libraries may not be available
-				fmt.Printf("warning: failed to attach %s uprobes to %s: %v\n", mode, path, err)
+				fmt.Fprintf(os.Stderr, "warning: failed to attach %s uprobes to %s: %v\n", mode, path, err)
 			}
 		}
 
@@ -183,7 +183,7 @@ func (p *Pipeline) attachProbes() error {
 		for _, binPath := range p.libraryFinder.FindStaticBinaries() {
 			p.debugf("Found statically-linked SSL binary: %s", binPath)
 			if err := p.tracer.AttachUprobes(binPath, ProbeModeOpenSSL); err != nil {
-				fmt.Printf("warning: failed to attach uprobes to %s: %v\n", binPath, err)
+				fmt.Fprintf(os.Stderr, "warning: failed to attach uprobes to %s: %v\n", binPath, err)
 			}
 		}
 		return nil

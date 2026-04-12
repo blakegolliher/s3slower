@@ -115,15 +115,16 @@ func TestRecordRequest(t *testing.T) {
 // TestExporter tests the Exporter struct.
 func TestExporter(t *testing.T) {
 	t.Run("creates_exporter", func(t *testing.T) {
-		exp := NewExporter(":9000", nil)
-
+		exp, err := NewExporter(":9000", nil)
+		assert.NoError(t, err)
 		assert.NotNil(t, exp)
 		assert.NotNil(t, exp.Metrics())
 		assert.Equal(t, ":9000", exp.addr)
 	})
 
 	t.Run("creates_exporter_with_extra_labels", func(t *testing.T) {
-		exp := NewExporter(":9000", []string{"client", "env"})
+		exp, err := NewExporter(":9000", []string{"client", "env"})
+		assert.NoError(t, err)
 		assert.NotNil(t, exp)
 	})
 }
