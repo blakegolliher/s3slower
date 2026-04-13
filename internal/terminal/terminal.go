@@ -63,9 +63,9 @@ func (w *Writer) WriteHeader() {
 }
 
 func (w *Writer) writeTableHeader() {
-	fmt.Fprintf(w.out, "%-12s %-6s %-8s %-14s %-15s %8s %9s %-26s\n",
+	fmt.Fprintf(w.out, "%-12s %-6s %-8s %-24s %-40s %10s %9s %s\n",
 		"TIME", "METHOD", "OP", "BUCKET", "ENDPOINT", "BYTES", "LAT(ms)", "KEY")
-	fmt.Fprintf(w.out, "%s\n", strings.Repeat("-", 105))
+	fmt.Fprintf(w.out, "%s\n", strings.Repeat("-", 120))
 }
 
 // WriteEvent writes a single event.
@@ -99,15 +99,22 @@ func (w *Writer) writeTableEvent(e *event.S3Event) {
 		operation = "-"
 	}
 
-	fmt.Fprintf(w.out, "%-12s %-6s %-8s %-14s %-15s %8d %9.2f %-26s\n",
+	// For uploads (PUT/POST), show the request size (object being uploaded).
+	// For reads (GET/HEAD/DELETE/LIST), show the response size.
+	displayBytes := e.ResponseSize
+	if (e.Method == "PUT" || e.Method == "POST") && e.RequestSize > 0 {
+		displayBytes = e.RequestSize
+	}
+
+	fmt.Fprintf(w.out, "%-12s %-6s %-8s %-24s %-40s %10d %9.2f %s\n",
 		timeStr,
 		e.Method,
 		operation,
-		truncate(e.Bucket, 14),
-		truncate(e.Endpoint, 15),
-		e.ResponseSize,
+		e.Bucket,
+		e.Endpoint,
+		displayBytes,
 		e.LatencyMs,
-		truncate(key, 26),
+		key,
 	)
 }
 

@@ -161,12 +161,13 @@ func TestParseHTTPRequest_UTF8Path(t *testing.T) {
 // TestParseHTTPResponse tests the ParseHTTPResponse function.
 func TestParseHTTPResponse(t *testing.T) {
 	tests := []struct {
-		name       string
-		raw        []byte
-		wantStatus int
+		name             string
+		raw              []byte
+		wantStatus       int
+		wantContentLength int
 	}{
 		// Valid responses
-		{name: "200_ok", raw: []byte("HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n"), wantStatus: 200},
+		{name: "200_ok_with_cl", raw: []byte("HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n"), wantStatus: 200, wantContentLength: 1024},
 		{name: "201_created", raw: []byte("HTTP/1.1 201 Created\r\n\r\n"), wantStatus: 201},
 		{name: "204_no_content", raw: []byte("HTTP/1.1 204 No Content\r\n\r\n"), wantStatus: 204},
 		{name: "304_not_modified", raw: []byte("HTTP/1.1 304 Not Modified\r\n\r\n"), wantStatus: 304},
@@ -177,6 +178,7 @@ func TestParseHTTPResponse(t *testing.T) {
 		{name: "503_service_unavailable", raw: []byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"), wantStatus: 503},
 		{name: "100_continue", raw: []byte("HTTP/1.1 100 Continue\r\n\r\n"), wantStatus: 100},
 		{name: "http_10_response", raw: []byte("HTTP/1.0 200 OK\r\n\r\n"), wantStatus: 200},
+		{name: "200_large_cl", raw: []byte("HTTP/1.1 200 OK\r\nContent-Length: 10240\r\nContent-Type: binary/octet-stream\r\n\r\n"), wantStatus: 200, wantContentLength: 10240},
 
 		// Error cases
 		{name: "empty_input", raw: []byte(""), wantStatus: 0},
@@ -190,8 +192,9 @@ func TestParseHTTPResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status := ParseHTTPResponse(tt.raw)
+			status, contentLength := ParseHTTPResponse(tt.raw)
 			assert.Equal(t, tt.wantStatus, status)
+			assert.Equal(t, tt.wantContentLength, contentLength)
 		})
 	}
 }

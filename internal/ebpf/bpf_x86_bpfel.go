@@ -27,17 +27,18 @@ type bpfEventT struct {
 	IsPartial       uint8
 	ClientType      uint8
 	Pad             [2]uint8
-	Data            [512]int8
-	RespData        [128]int8
+	Data            [1024]int8
+	RespData        [768]int8
 	_               [4]byte
 }
 
 type bpfReadArgsT struct {
-	_      structs.HostLayout
-	BufPtr uint64
-	Fd     uint32
-	Source uint8
-	Pad    [3]uint8
+	_            structs.HostLayout
+	BufPtr       uint64
+	ReadbytesPtr uint64
+	Fd           uint32
+	Source       uint8
+	Pad          [3]uint8
 }
 
 type bpfReqInfoT struct {
@@ -47,7 +48,7 @@ type bpfReqInfoT struct {
 	Fd         uint32
 	ClientType uint8
 	Comm       [16]int8
-	Data       [512]int8
+	Data       [1024]int8
 	_          [7]byte
 }
 
@@ -99,15 +100,21 @@ type bpfProgramSpecs struct {
 	KprobeSysWrite       *ebpf.ProgramSpec `ebpf:"kprobe_sys_write"`
 	KretprobeSysRead     *ebpf.ProgramSpec `ebpf:"kretprobe_sys_read"`
 	KretprobeSysRecvfrom *ebpf.ProgramSpec `ebpf:"kretprobe_sys_recvfrom"`
+	TracepointExec       *ebpf.ProgramSpec `ebpf:"tracepoint_exec"`
 	UprobeGnutlsRecv     *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_recv"`
 	UprobeGnutlsSend     *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_send"`
+	UprobeGoTlsRead      *ebpf.ProgramSpec `ebpf:"uprobe_go_tls_read"`
+	UprobeGoTlsWrite     *ebpf.ProgramSpec `ebpf:"uprobe_go_tls_write"`
 	UprobePrRead         *ebpf.ProgramSpec `ebpf:"uprobe_pr_read"`
 	UprobePrWrite        *ebpf.ProgramSpec `ebpf:"uprobe_pr_write"`
 	UprobeSslRead        *ebpf.ProgramSpec `ebpf:"uprobe_ssl_read"`
+	UprobeSslReadEx      *ebpf.ProgramSpec `ebpf:"uprobe_ssl_read_ex"`
 	UprobeSslWrite       *ebpf.ProgramSpec `ebpf:"uprobe_ssl_write"`
 	UretprobeGnutlsRecv  *ebpf.ProgramSpec `ebpf:"uretprobe_gnutls_recv"`
+	UretprobeGoTlsRead   *ebpf.ProgramSpec `ebpf:"uretprobe_go_tls_read"`
 	UretprobePrRead      *ebpf.ProgramSpec `ebpf:"uretprobe_pr_read"`
 	UretprobeSslRead     *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_read"`
+	UretprobeSslReadEx   *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_read_ex"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
@@ -117,6 +124,7 @@ type bpfMapSpecs struct {
 	ConfigMap   *ebpf.MapSpec `ebpf:"config_map"`
 	EventHeap   *ebpf.MapSpec `ebpf:"event_heap"`
 	Events      *ebpf.MapSpec `ebpf:"events"`
+	ExecEvents  *ebpf.MapSpec `ebpf:"exec_events"`
 	ReadArgsMap *ebpf.MapSpec `ebpf:"read_args_map"`
 	ReqHeap     *ebpf.MapSpec `ebpf:"req_heap"`
 	ReqMap      *ebpf.MapSpec `ebpf:"req_map"`
@@ -151,6 +159,7 @@ type bpfMaps struct {
 	ConfigMap   *ebpf.Map `ebpf:"config_map"`
 	EventHeap   *ebpf.Map `ebpf:"event_heap"`
 	Events      *ebpf.Map `ebpf:"events"`
+	ExecEvents  *ebpf.Map `ebpf:"exec_events"`
 	ReadArgsMap *ebpf.Map `ebpf:"read_args_map"`
 	ReqHeap     *ebpf.Map `ebpf:"req_heap"`
 	ReqMap      *ebpf.Map `ebpf:"req_map"`
@@ -161,6 +170,7 @@ func (m *bpfMaps) Close() error {
 		m.ConfigMap,
 		m.EventHeap,
 		m.Events,
+		m.ExecEvents,
 		m.ReadArgsMap,
 		m.ReqHeap,
 		m.ReqMap,
@@ -183,15 +193,21 @@ type bpfPrograms struct {
 	KprobeSysWrite       *ebpf.Program `ebpf:"kprobe_sys_write"`
 	KretprobeSysRead     *ebpf.Program `ebpf:"kretprobe_sys_read"`
 	KretprobeSysRecvfrom *ebpf.Program `ebpf:"kretprobe_sys_recvfrom"`
+	TracepointExec       *ebpf.Program `ebpf:"tracepoint_exec"`
 	UprobeGnutlsRecv     *ebpf.Program `ebpf:"uprobe_gnutls_recv"`
 	UprobeGnutlsSend     *ebpf.Program `ebpf:"uprobe_gnutls_send"`
+	UprobeGoTlsRead      *ebpf.Program `ebpf:"uprobe_go_tls_read"`
+	UprobeGoTlsWrite     *ebpf.Program `ebpf:"uprobe_go_tls_write"`
 	UprobePrRead         *ebpf.Program `ebpf:"uprobe_pr_read"`
 	UprobePrWrite        *ebpf.Program `ebpf:"uprobe_pr_write"`
 	UprobeSslRead        *ebpf.Program `ebpf:"uprobe_ssl_read"`
+	UprobeSslReadEx      *ebpf.Program `ebpf:"uprobe_ssl_read_ex"`
 	UprobeSslWrite       *ebpf.Program `ebpf:"uprobe_ssl_write"`
 	UretprobeGnutlsRecv  *ebpf.Program `ebpf:"uretprobe_gnutls_recv"`
+	UretprobeGoTlsRead   *ebpf.Program `ebpf:"uretprobe_go_tls_read"`
 	UretprobePrRead      *ebpf.Program `ebpf:"uretprobe_pr_read"`
 	UretprobeSslRead     *ebpf.Program `ebpf:"uretprobe_ssl_read"`
+	UretprobeSslReadEx   *ebpf.Program `ebpf:"uretprobe_ssl_read_ex"`
 }
 
 func (p *bpfPrograms) Close() error {
@@ -202,15 +218,21 @@ func (p *bpfPrograms) Close() error {
 		p.KprobeSysWrite,
 		p.KretprobeSysRead,
 		p.KretprobeSysRecvfrom,
+		p.TracepointExec,
 		p.UprobeGnutlsRecv,
 		p.UprobeGnutlsSend,
+		p.UprobeGoTlsRead,
+		p.UprobeGoTlsWrite,
 		p.UprobePrRead,
 		p.UprobePrWrite,
 		p.UprobeSslRead,
+		p.UprobeSslReadEx,
 		p.UprobeSslWrite,
 		p.UretprobeGnutlsRecv,
+		p.UretprobeGoTlsRead,
 		p.UretprobePrRead,
 		p.UretprobeSslRead,
+		p.UretprobeSslReadEx,
 	)
 }
 

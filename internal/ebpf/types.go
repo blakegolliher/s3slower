@@ -29,6 +29,8 @@ const (
 	ProbeModeNSS ProbeMode = "nss"
 	// ProbeModeS2N traces HTTPS via s2n-tls uprobes (AWS CRT).
 	ProbeModeS2N ProbeMode = "s2n"
+	// ProbeModeGoTLS traces HTTPS via Go crypto/tls uprobes.
+	ProbeModeGoTLS ProbeMode = "gotls"
 	// ProbeModeAuto automatically detects available TLS libraries.
 	ProbeModeAuto ProbeMode = "auto"
 )
@@ -47,8 +49,8 @@ type RawEvent struct {
 	IsPartial      uint8
 	ClientType     uint8
 	_              [2]byte // padding
-	Data            [512]byte
-	RespData        [128]byte
+	Data            [1024]byte
+	RespData        [768]byte
 }
 
 // ClientType constants matching BPF program.
@@ -102,8 +104,18 @@ type Tracer interface {
 	// AttachUprobes attaches uprobes to a TLS library.
 	AttachUprobes(libraryPath string, mode ProbeMode) error
 
+	// AttachGoTLSUprobes attaches Go crypto/tls uprobes with pre-computed
+	// RET offsets for crypto/tls.(*Conn).Read. This avoids re-opening
+	// the ELF binary to find RET offsets.
+	AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint64) error
+
 	// DetachAll detaches all probes.
 	DetachAll() error
+
+	// WatchExec attaches a tracepoint on process execution and calls
+	// the callback with the PID of each newly started process. Used
+	// for dynamic Go TLS binary discovery.
+	WatchExec(callback func(pid uint32)) error
 
 	// Start begins reading events from the perf buffer.
 	Start(callback EventCallback) error
@@ -134,6 +146,10 @@ type LibraryFinder interface {
 
 	// FindS2N returns the path to an s2n-tls library (AWS CRT _awscrt.abi3.so or libs2n.so).
 	FindS2N() (string, error)
+
+	// FindGoTLS returns paths to Go binaries that use crypto/tls.
+	// Each Go binary needs its own uprobe attachment (not a shared library).
+	FindGoTLS() []string
 
 	// FindAll returns all available TLS libraries.
 	FindAll() map[ProbeMode]string

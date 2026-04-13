@@ -66,6 +66,7 @@ func newRunCommand() *cobra.Command {
 		host         string
 		minLatency   uint64
 		mode         string
+		libraryPath  string
 		watchProcs   []string
 		logDir       string
 		logMaxSizeMB int
@@ -135,6 +136,9 @@ to enable metrics collection.`,
 			if cmd.Flags().Changed("mode") {
 				cfg.Mode = mode
 			}
+			if cmd.Flags().Changed("library") {
+				cfg.LibraryPath = libraryPath
+			}
 			if cmd.Flags().Changed("min-latency") {
 				cfg.MinLatencyMs = minLatency
 			}
@@ -189,7 +193,8 @@ to enable metrics collection.`,
 	cmd.Flags().IntVarP(&port, "port", "p", 9000, "Prometheus exporter port")
 	cmd.Flags().StringVar(&host, "host", "::", "Prometheus exporter host")
 	cmd.Flags().Uint64Var(&minLatency, "min-latency", 0, "Minimum latency in ms to report")
-	cmd.Flags().StringVar(&mode, "mode", "auto", "Probe mode: auto, http, openssl, gnutls, nss, s2n")
+	cmd.Flags().StringVar(&mode, "mode", "auto", "Probe mode: auto, http, openssl, gnutls, nss, s2n, gotls")
+	cmd.Flags().StringVar(&libraryPath, "library", "", "Path to TLS library or Go binary (for gotls/openssl/gnutls/nss/s2n modes)")
 	cmd.Flags().StringSliceVar(&watchProcs, "watch", nil, "Process names to watch (e.g., mc,warp)")
 	cmd.Flags().StringVar(&logDir, "log-dir", "/var/log/s3slower", "Log directory")
 	cmd.Flags().IntVar(&logMaxSizeMB, "log-max-size", 100, "Max log size in MB before rotation")
@@ -245,7 +250,7 @@ The tracer will automatically detect the TLS library used.`,
 	}
 
 	cmd.Flags().IntVar(&pid, "pid", 0, "Process ID to attach to")
-	cmd.Flags().StringVar(&mode, "mode", "auto", "Probe mode: auto, openssl, gnutls, nss, http")
+	cmd.Flags().StringVar(&mode, "mode", "auto", "Probe mode: auto, openssl, gnutls, nss, s2n, gotls, http")
 	cmd.Flags().Uint64Var(&minLatency, "min-latency", 0, "Minimum latency in ms to report")
 	cmd.Flags().StringVar(&logDir, "log-dir", "/var/log/s3slower", "Log directory")
 	cmd.Flags().BoolVar(&noLog, "no-log", false, "Disable file logging")

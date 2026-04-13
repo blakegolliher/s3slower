@@ -36,10 +36,17 @@ DIST_DIR := dist
 # Default target
 all: build
 
+# BPF source and generated output
+BPF_SRC := internal/ebpf/bpf/s3slower.c
+BPF_OBJ := internal/ebpf/bpf_x86_bpfel.o
+
 # Build the binary
 build: $(BUILD_DIR)/$(BINARY_NAME)
 
-$(BUILD_DIR)/$(BINARY_NAME): $(shell find . -name '*.go' -not -path './.git/*')
+$(BPF_OBJ): $(BPF_SRC)
+	$(MAKE) generate
+
+$(BUILD_DIR)/$(BINARY_NAME): $(BPF_OBJ) $(shell find . -name '*.go' -not -path './.git/*')
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 go build $(GOFLAGS) $(LDFLAGS) -o $@ ./cmd/s3slower
 
