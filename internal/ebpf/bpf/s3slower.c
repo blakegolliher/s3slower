@@ -9,10 +9,14 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // Data capture sizes
-#define MAX_DATA_SIZE 512
-#define MAX_RESP_SIZE 128
+#define MAX_DATA_SIZE 1024
+#define MAX_RESP_SIZE 768
 #define HTTP_CHECK_SIZE 8
 #define TASK_COMM_LEN 16
+// Minimum response bytes to create an event. Reads smaller than this
+// (e.g. 1-byte peek for HTTP/1.1 100 Continue) are skipped so the
+// req_map entry survives until the actual response is read.
+#define MIN_RESP_SIZE 16
 
 // Client type constants
 #define CLIENT_UNKNOWN  0
@@ -61,6 +65,7 @@ struct req_info_t {
 // Saves read() arguments from entry probe for use in return probe.
 struct read_args_t {
     __u64 buf_ptr;
+    __u64 readbytes_ptr; // SSL_read_ex: pointer to size_t output param
     __u32 fd;
     __u8  source;   // READ_SRC_KPROBE or READ_SRC_UPROBE
     __u8  _pad[3];
@@ -112,6 +117,19 @@ struct {
     __type(key, __u64);
     __type(value, struct read_args_t);
 } read_args_map SEC(".maps");
+
+// Exec notification for dynamic Go TLS binary discovery.
+// Sends PID to userspace on every execve so it can check
+// whether the new binary uses crypto/tls and attach uprobes.
+struct exec_event_t {
+    __u32 pid;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
+} exec_events SEC(".maps");
 
 // Config keys
 #define CONFIG_TARGET_PID 0
@@ -447,6 +465,32 @@ int uprobe_ssl_read(struct pt_regs *ctx) {
     return 0;
 }
 
+// SSL_read_ex(SSL *ssl, void *buf, size_t num, size_t *readbytes)
+// Unlike SSL_read, the byte count is in *readbytes, not the return value.
+SEC("uprobe/SSL_read_ex")
+int uprobe_ssl_read_ex(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    if (!bpf_map_lookup_elem(&req_map, &req_key))
+        return 0;
+
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+    const size_t *readbytes = (const size_t *)PT_REGS_PARM4(ctx);
+
+    struct read_args_t args = {};
+    args.buf_ptr = (__u64)buf;
+    args.readbytes_ptr = (__u64)readbytes;
+    args.source = READ_SRC_UPROBE;
+    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+    return 0;
+}
+
 SEC("uprobe/gnutls_record_recv")
 int uprobe_gnutls_recv(struct pt_regs *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -652,6 +696,11 @@ int uretprobe_ssl_read(struct pt_regs *ctx) {
     __u64 buf_ptr = args->buf_ptr;
     bpf_map_delete_elem(&read_args_map, &pid_tgid);
 
+    // Skip tiny reads (e.g. 1-byte peek for 100 Continue) - keep req_map
+    // entry so the next read captures the actual response.
+    if (ret < MIN_RESP_SIZE)
+        return 0;
+
     __u64 now = bpf_ktime_get_ns() / 1000;
 
     __u64 req_key = ((__u64)pid << 32) | tid;
@@ -681,6 +730,84 @@ int uretprobe_ssl_read(struct pt_regs *ctx) {
     event->req_size = req->req_size;
     event->resp_size = ret;
     event->actual_resp_bytes = ret;
+    event->is_partial = 0;
+    event->client_type = req->client_type;
+    __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
+
+    __builtin_memset(event->resp_data, 0, MAX_RESP_SIZE);
+    bpf_probe_read_user(event->resp_data, MAX_RESP_SIZE, (const char *)buf_ptr);
+
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
+    bpf_map_delete_elem(&req_map, &req_key);
+
+    return 0;
+}
+
+// SSL_read_ex returns 1 on success; actual byte count is in *readbytes (PARM4).
+SEC("uretprobe/SSL_read_ex")
+int uretprobe_ssl_read_ex(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    __u32 tid = pid_tgid & 0xFFFFFFFF;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    int ret = (int)PT_REGS_RC(ctx);
+    if (ret <= 0)
+        return 0;
+
+    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    if (!args)
+        return 0;
+
+    if (args->source != READ_SRC_UPROBE)
+        return 0;
+
+    __u64 buf_ptr = args->buf_ptr;
+    __u64 readbytes_ptr = args->readbytes_ptr;
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
+
+    // Read actual byte count from *readbytes
+    __u64 actual_bytes = 0;
+    if (readbytes_ptr) {
+        bpf_probe_read_user(&actual_bytes, sizeof(actual_bytes), (const void *)readbytes_ptr);
+    }
+
+    // Skip tiny reads (e.g. 1-byte peek for 100 Continue) - keep req_map
+    // entry so the next read captures the actual response.
+    if (actual_bytes < MIN_RESP_SIZE)
+        return 0;
+
+    __u64 now = bpf_ktime_get_ns() / 1000;
+
+    __u64 req_key = ((__u64)pid << 32) | tid;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
+    if (!req)
+        return 0;
+
+    __u64 latency_us = now - req->start_time;
+    if (should_filter_latency(latency_us)) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    __u32 zero = 0;
+    struct event_t *event = bpf_map_lookup_elem(&event_heap, &zero);
+    if (!event) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    event->timestamp_us = now;
+    event->latency_us = latency_us;
+    event->pid = pid;
+    event->tid = tid;
+    event->fd = req->fd;
+    __builtin_memcpy(event->comm, req->comm, TASK_COMM_LEN);
+    event->req_size = req->req_size;
+    event->resp_size = (__u32)actual_bytes;
+    event->actual_resp_bytes = (__u32)actual_bytes;
     event->is_partial = 0;
     event->client_type = req->client_type;
     __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
@@ -823,5 +950,168 @@ int uretprobe_pr_read(struct pt_regs *ctx) {
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
     bpf_map_delete_elem(&req_map, &req_key);
 
+    return 0;
+}
+
+// ========== Go crypto/tls Probes ==========
+// Go 1.17+ uses a register-based calling convention (ABIInternal) that
+// differs from the C ABI.  The standard PT_REGS_PARMx macros do NOT apply.
+//
+//   func (c *Conn) Write(b []byte) (int, error)
+//   func (c *Conn) Read(b []byte)  (int, error)
+//
+//   RAX = receiver (*Conn)
+//   RBX = b.ptr  (ctx->bx)
+//   RCX = b.len  (ctx->cx)
+//   Return: RAX = n  (PT_REGS_RC / ctx->ax)
+//
+// Go net/http uses separate goroutines (and OS threads) for writing
+// and reading on the same connection.  Keying req_map by TID would
+// fail because Write and Read run on different threads.  Instead we
+// key by the *Conn pointer (RAX), which is the same for both.
+
+SEC("uprobe/go_tls_write")
+int uprobe_go_tls_write(struct pt_regs *ctx) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    // Go ABI: RAX = *Conn, RBX = buf pointer, RCX = buf length
+    __u32 conn_id = (__u32)ctx->ax;  // Lower 32 bits of Conn pointer
+    const char *buf = (const char *)ctx->bx;
+    int num = (int)ctx->cx;
+    if (num <= 0)
+        return 0;
+
+    char check[HTTP_CHECK_SIZE] = {};
+    if (bpf_probe_read_user(check, sizeof(check), buf) < 0)
+        return 0;
+    if (!is_http_data(check, HTTP_CHECK_SIZE))
+        return 0;
+
+    __u32 zero = 0;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_heap, &zero);
+    if (!req)
+        return 0;
+
+    req->start_time = bpf_ktime_get_ns() / 1000;
+    req->req_size = num;
+    req->fd = conn_id;
+    bpf_get_current_comm(&req->comm, sizeof(req->comm));
+    req->client_type = detect_client_type(req->comm);
+    bpf_probe_read_user(req->data, MAX_DATA_SIZE, buf);
+
+    __u64 key = ((__u64)pid << 32) | conn_id;
+    bpf_map_update_elem(&req_map, &key, req, BPF_ANY);
+
+    return 0;
+}
+
+SEC("uprobe/go_tls_read")
+int uprobe_go_tls_read(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    // Go ABI: RAX = *Conn, RBX = output buffer pointer
+    __u32 conn_id = (__u32)ctx->ax;
+    const char *buf = (const char *)ctx->bx;
+
+    // Unlike the C TLS probes, we do NOT check req_map here.
+    // Go's net/http readLoop calls tls.Read BEFORE the writeLoop
+    // calls tls.Write (via bufio.Peek), so req_map is empty at
+    // Read entry. The Write happens between Read entry and Read
+    // return, so the return probe will find the req_map entry.
+    struct read_args_t args = {};
+    args.buf_ptr = (__u64)buf;
+    args.fd = conn_id;  // Carry conn_id to return probe
+    args.source = READ_SRC_UPROBE;
+    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+    return 0;
+}
+
+SEC("uretprobe/go_tls_read")
+int uretprobe_go_tls_read(struct pt_regs *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+
+    if (should_filter_pid(pid))
+        return 0;
+
+    // Go ABI: RAX = bytes read (same register as C return value)
+    int ret = (int)PT_REGS_RC(ctx);
+    if (ret <= 0)
+        return 0;
+
+    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    if (!args)
+        return 0;
+
+    if (args->source != READ_SRC_UPROBE)
+        return 0;
+
+    __u64 buf_ptr = args->buf_ptr;
+    __u32 conn_id = args->fd;  // Retrieve conn_id saved at Read entry
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
+
+    // Skip tiny reads (e.g. 1-byte peek for 100 Continue) - keep req_map
+    // entry so the next read captures the actual response.
+    if (ret < MIN_RESP_SIZE)
+        return 0;
+
+    __u64 now = bpf_ktime_get_ns() / 1000;
+
+    __u64 req_key = ((__u64)pid << 32) | conn_id;
+    struct req_info_t *req = bpf_map_lookup_elem(&req_map, &req_key);
+    if (!req)
+        return 0;
+
+    __u64 latency_us = now - req->start_time;
+    if (should_filter_latency(latency_us)) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    __u32 zero = 0;
+    struct event_t *event = bpf_map_lookup_elem(&event_heap, &zero);
+    if (!event) {
+        bpf_map_delete_elem(&req_map, &req_key);
+        return 0;
+    }
+
+    event->timestamp_us = now;
+    event->latency_us = latency_us;
+    event->pid = pid;
+    event->tid = pid_tgid & 0xFFFFFFFF;
+    event->fd = conn_id;
+    __builtin_memcpy(event->comm, req->comm, TASK_COMM_LEN);
+    event->req_size = req->req_size;
+    event->resp_size = ret;
+    event->actual_resp_bytes = ret;
+    event->is_partial = 0;
+    event->client_type = req->client_type;
+    __builtin_memcpy(event->data, req->data, MAX_DATA_SIZE);
+
+    __builtin_memset(event->resp_data, 0, MAX_RESP_SIZE);
+    bpf_probe_read_user(event->resp_data, MAX_RESP_SIZE, (const char *)buf_ptr);
+
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
+    bpf_map_delete_elem(&req_map, &req_key);
+
+    return 0;
+}
+
+// ========== Process Exec Tracepoint for Dynamic Binary Discovery ==========
+// Fires on every process start so userspace can check if the new binary
+// uses Go crypto/tls and attach uprobes before its first TLS call.
+
+SEC("tracepoint/sched/sched_process_exec")
+int tracepoint_exec(void *ctx) {
+    struct exec_event_t event = {};
+    event.pid = bpf_get_current_pid_tgid() >> 32;
+    bpf_perf_event_output(ctx, &exec_events, BPF_F_CURRENT_CPU, &event, sizeof(event));
     return 0;
 }

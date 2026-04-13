@@ -57,34 +57,40 @@ func ParseHTTPRequest(raw []byte) (method, host, path string, contentLength int)
 			if cl, err := strconv.Atoi(headerValue); err == nil {
 				contentLength = cl
 			}
+		case "x-amz-decoded-content-length":
+			// AWS chunked uploads: this is the actual object size
+			if cl, err := strconv.Atoi(headerValue); err == nil {
+				contentLength = cl
+			}
 		}
 	}
 
 	return method, host, path, contentLength
 }
 
-// ParseHTTPResponse parses a raw HTTP response and extracts the status code.
-// Returns 0 for invalid or empty input.
-func ParseHTTPResponse(raw []byte) int {
+// ParseHTTPResponse parses a raw HTTP response and extracts the status code
+// and Content-Length header value. Returns 0 for either field on invalid or
+// empty input.
+func ParseHTTPResponse(raw []byte) (statusCode int, contentLength int) {
 	if len(raw) == 0 {
-		return 0
+		return 0, 0
 	}
 
 	// Check for HTTP prefix
 	if !bytes.HasPrefix(raw, []byte("HTTP/")) {
-		return 0
+		return 0, 0
 	}
 
 	// Find first space after HTTP version
 	spaceIdx := bytes.IndexByte(raw[5:], ' ')
 	if spaceIdx == -1 {
-		return 0
+		return 0, 0
 	}
 
 	// Find the status code (next word after version)
 	start := 5 + spaceIdx + 1
 	if start >= len(raw) {
-		return 0
+		return 0, 0
 	}
 
 	// Extract status code (up to next space or end)
@@ -94,15 +100,36 @@ func ParseHTTPResponse(raw []byte) int {
 	}
 
 	if end == start {
-		return 0
+		return 0, 0
 	}
 
-	statusCode, err := strconv.Atoi(string(raw[start:end]))
+	sc, err := strconv.Atoi(string(raw[start:end]))
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 
-	return statusCode
+	// Parse headers for Content-Length
+	text := string(raw)
+	lines := strings.Split(text, "\r\n")
+	for i := 1; i < len(lines); i++ {
+		line := lines[i]
+		if line == "" {
+			break
+		}
+		colonIdx := strings.Index(line, ":")
+		if colonIdx == -1 {
+			continue
+		}
+		headerName := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
+		if headerName == "content-length" {
+			headerValue := strings.TrimSpace(line[colonIdx+1:])
+			if cl, err := strconv.Atoi(headerValue); err == nil {
+				contentLength = cl
+			}
+		}
+	}
+
+	return sc, contentLength
 }
 
 // ParseBucketEndpoint extracts bucket and endpoint from host and path.

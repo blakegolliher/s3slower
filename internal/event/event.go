@@ -83,10 +83,14 @@ func (e *S3Event) ParseFromRaw(data []byte) {
 	}
 }
 
-// ParseStatusCode extracts the status code from response data.
+// ParseStatusCode extracts the status code and Content-Length from response data.
 func (e *S3Event) ParseStatusCode(data []byte) {
-	e.StatusCode = http.ParseHTTPResponse(data)
-	e.IsError = e.StatusCode >= 400
+	statusCode, contentLength := http.ParseHTTPResponse(data)
+	e.StatusCode = statusCode
+	e.IsError = statusCode >= 400
+	if contentLength > 0 {
+		e.ResponseSize = uint32(contentLength)
+	}
 }
 
 // SetLatency sets the latency in microseconds and calculates milliseconds.
