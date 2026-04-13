@@ -246,6 +246,8 @@ type MockLibraryFinder struct {
 	gnutlsErr   error
 	nssPath     string
 	nssErr      error
+	s2nPath     string
+	s2nErr      error
 }
 
 // NewMockLibraryFinder creates a new mock library finder.
@@ -286,6 +288,17 @@ func (m *MockLibraryFinder) FindNSS() (string, error) {
 	return m.nssPath, nil
 }
 
+// FindS2N returns the mock s2n-tls path.
+func (m *MockLibraryFinder) FindS2N() (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.s2nErr != nil {
+		return "", m.s2nErr
+	}
+	return m.s2nPath, nil
+}
+
 // FindAll returns all mock libraries.
 func (m *MockLibraryFinder) FindAll() map[ProbeMode]string {
 	m.mu.RLock()
@@ -301,6 +314,9 @@ func (m *MockLibraryFinder) FindAll() map[ProbeMode]string {
 	}
 	if m.nssErr == nil && m.nssPath != "" {
 		result[ProbeModeNSS] = m.nssPath
+	}
+	if m.s2nErr == nil && m.s2nPath != "" {
+		result[ProbeModeS2N] = m.s2nPath
 	}
 
 	return result

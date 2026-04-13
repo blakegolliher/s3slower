@@ -189,7 +189,7 @@ to enable metrics collection.`,
 	cmd.Flags().IntVarP(&port, "port", "p", 9000, "Prometheus exporter port")
 	cmd.Flags().StringVar(&host, "host", "::", "Prometheus exporter host")
 	cmd.Flags().Uint64Var(&minLatency, "min-latency", 0, "Minimum latency in ms to report")
-	cmd.Flags().StringVar(&mode, "mode", "auto", "Probe mode: auto, http, openssl, gnutls, nss")
+	cmd.Flags().StringVar(&mode, "mode", "auto", "Probe mode: auto, http, openssl, gnutls, nss, s2n")
 	cmd.Flags().StringSliceVar(&watchProcs, "watch", nil, "Process names to watch (e.g., mc,warp)")
 	cmd.Flags().StringVar(&logDir, "log-dir", "/var/log/s3slower", "Log directory")
 	cmd.Flags().IntVar(&logMaxSizeMB, "log-max-size", 100, "Max log size in MB before rotation")

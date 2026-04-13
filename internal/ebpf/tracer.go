@@ -282,42 +282,47 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 		return fmt.Errorf("failed to open library %s: %w", libraryPath, err)
 	}
 
-	var probeNames []struct {
-		symbol  string
-		program string
-		isRet   bool
+	type uprobe struct {
+		symbol   string
+		program  string
+		isRet    bool
+		optional bool // if true, failure to attach is non-fatal
 	}
+
+	var probeNames []uprobe
 
 	switch mode {
 	case ProbeModeOpenSSL:
-		probeNames = []struct {
-			symbol  string
-			program string
-			isRet   bool
-		}{
-			{"SSL_write", "uprobe_ssl_write", false},
-			{"SSL_read", "uprobe_ssl_read", false},
-			{"SSL_read", "uretprobe_ssl_read", true},
+		probeNames = []uprobe{
+			{"SSL_write", "uprobe_ssl_write", false, false},
+			{"SSL_read", "uprobe_ssl_read", false, false},
+			{"SSL_read", "uretprobe_ssl_read", true, false},
+			// Modern OpenSSL 3.x / Python 3.10+ uses the _ex variants exclusively.
+			// Same arg layout (ssl, buf, size) so the BPF programs work as-is.
+			// Optional because older OpenSSL may not export these symbols.
+			{"SSL_write_ex", "uprobe_ssl_write", false, true},
+			{"SSL_read_ex", "uprobe_ssl_read", false, true},
+			{"SSL_read_ex", "uretprobe_ssl_read", true, true},
 		}
 	case ProbeModeGnuTLS:
-		probeNames = []struct {
-			symbol  string
-			program string
-			isRet   bool
-		}{
-			{"gnutls_record_send", "uprobe_gnutls_send", false},
-			{"gnutls_record_recv", "uprobe_gnutls_recv", false},
-			{"gnutls_record_recv", "uretprobe_gnutls_recv", true},
+		probeNames = []uprobe{
+			{"gnutls_record_send", "uprobe_gnutls_send", false, false},
+			{"gnutls_record_recv", "uprobe_gnutls_recv", false, false},
+			{"gnutls_record_recv", "uretprobe_gnutls_recv", true, false},
 		}
 	case ProbeModeNSS:
-		probeNames = []struct {
-			symbol  string
-			program string
-			isRet   bool
-		}{
-			{"PR_Write", "uprobe_pr_write", false},
-			{"PR_Read", "uprobe_pr_read", false},
-			{"PR_Read", "uretprobe_pr_read", true},
+		probeNames = []uprobe{
+			{"PR_Write", "uprobe_pr_write", false, false},
+			{"PR_Read", "uprobe_pr_read", false, false},
+			{"PR_Read", "uretprobe_pr_read", true, false},
+		}
+	case ProbeModeS2N:
+		// s2n_send/s2n_recv have the same arg layout as SSL_write/SSL_read
+		// (ctx, buf, size) so we reuse the SSL BPF programs.
+		probeNames = []uprobe{
+			{"s2n_send", "uprobe_ssl_write", false, false},
+			{"s2n_recv", "uprobe_ssl_read", false, false},
+			{"s2n_recv", "uretprobe_ssl_read", true, false},
 		}
 	default:
 		return fmt.Errorf("unsupported probe mode: %s", mode)
@@ -336,6 +341,9 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 			l, err = ex.Uprobe(p.symbol, prog, nil)
 		}
 		if err != nil {
+			if p.optional {
+				continue
+			}
 			return fmt.Errorf("failed to attach uprobe %s: %w", p.symbol, err)
 		}
 		t.links = append(t.links, l)

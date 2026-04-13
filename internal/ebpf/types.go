@@ -27,6 +27,8 @@ const (
 	ProbeModeGnuTLS ProbeMode = "gnutls"
 	// ProbeModeNSS traces HTTPS via NSS uprobes.
 	ProbeModeNSS ProbeMode = "nss"
+	// ProbeModeS2N traces HTTPS via s2n-tls uprobes (AWS CRT).
+	ProbeModeS2N ProbeMode = "s2n"
 	// ProbeModeAuto automatically detects available TLS libraries.
 	ProbeModeAuto ProbeMode = "auto"
 )
@@ -129,6 +131,9 @@ type LibraryFinder interface {
 
 	// FindNSS returns the path to libnspr4.so.
 	FindNSS() (string, error)
+
+	// FindS2N returns the path to an s2n-tls library (AWS CRT _awscrt.abi3.so or libs2n.so).
+	FindS2N() (string, error)
 
 	// FindAll returns all available TLS libraries.
 	FindAll() map[ProbeMode]string

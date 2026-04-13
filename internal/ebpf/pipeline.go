@@ -144,7 +144,7 @@ func (p *Pipeline) attachProbes() error {
 	case ProbeModeHTTP:
 		return p.tracer.AttachKprobes()
 
-	case ProbeModeOpenSSL, ProbeModeGnuTLS, ProbeModeNSS:
+	case ProbeModeOpenSSL, ProbeModeGnuTLS, ProbeModeNSS, ProbeModeS2N:
 		libPath := p.libraryPath
 		if libPath == "" {
 			// Auto-detect library path
@@ -156,6 +156,8 @@ func (p *Pipeline) attachProbes() error {
 				libPath, err = p.libraryFinder.FindGnuTLS()
 			case ProbeModeNSS:
 				libPath, err = p.libraryFinder.FindNSS()
+			case ProbeModeS2N:
+				libPath, err = p.libraryFinder.FindS2N()
 			}
 			if err != nil {
 				return fmt.Errorf("failed to find %s library: %w", p.mode, err)
