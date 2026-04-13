@@ -37,6 +37,51 @@ func (f *DefaultLibraryFinder) FindNSS() (string, error) {
 	return findLibrary(ProbeModeNSS)
 }
 
+// FindS2N returns the path to an s2n-tls library (AWS CRT or system libs2n).
+func (f *DefaultLibraryFinder) FindS2N() (string, error) {
+	// AWS CLI v2 bundles s2n inside _awscrt.abi3.so
+	awsCRTPaths := []string{
+		"/usr/local/aws-cli/v2/current/dist/_awscrt.abi3.so",
+	}
+
+	// Check versioned AWS CLI installs
+	if matches, err := filepath.Glob("/usr/local/aws-cli/v2/*/dist/_awscrt.abi3.so"); err == nil {
+		awsCRTPaths = append(awsCRTPaths, matches...)
+	}
+
+	// Check pip-installed awscrt
+	pipPatterns := []string{
+		"/usr/lib/python*/site-packages/awscrt/_awscrt.abi3.so",
+		"/usr/lib64/python*/site-packages/awscrt/_awscrt.abi3.so",
+		"/usr/local/lib/python*/site-packages/awscrt/_awscrt.abi3.so",
+		"/usr/local/lib/python*/dist-packages/awscrt/_awscrt.abi3.so",
+	}
+	for _, pattern := range pipPatterns {
+		if matches, err := filepath.Glob(pattern); err == nil {
+			awsCRTPaths = append(awsCRTPaths, matches...)
+		}
+	}
+
+	for _, path := range awsCRTPaths {
+		if hasS2NSymbols(path) {
+			return path, nil
+		}
+	}
+
+	// Check for system libs2n.so
+	if paths := findViaLdconfig("libs2n"); len(paths) > 0 {
+		return paths[0], nil
+	}
+
+	for _, dir := range getCommonLibraryPaths() {
+		if path := findLibraryByPattern(dir, "libs2n.so*"); path != "" {
+			return path, nil
+		}
+	}
+
+	return "", errors.New("s2n-tls library not found")
+}
+
 // FindAll returns all available TLS libraries.
 func (f *DefaultLibraryFinder) FindAll() map[ProbeMode]string {
 	result := make(map[ProbeMode]string)
@@ -49,6 +94,9 @@ func (f *DefaultLibraryFinder) FindAll() map[ProbeMode]string {
 	}
 	if path, err := f.FindNSS(); err == nil {
 		result[ProbeModeNSS] = path
+	}
+	if path, err := f.FindS2N(); err == nil {
+		result[ProbeModeS2N] = path
 	}
 
 	return result
@@ -69,7 +117,7 @@ var extraSearchDirs = []string{
 	"/opt/bin",
 }
 
-// FindStaticBinaries returns paths to statically-linked executables that
+// FindStaticBinaries returns paths to executables and shared libraries that
 // contain SSL_write/SSL_read symbols. These need their own uprobe attachment
 // since they don't use the system's shared libssl.
 func (f *DefaultLibraryFinder) FindStaticBinaries() []string {
@@ -85,6 +133,39 @@ func (f *DefaultLibraryFinder) FindStaticBinaries() []string {
 		}
 	}
 
+	// Find bundled Python SSL modules (e.g. AWS CLI v2 ships its own OpenSSL
+	// inside _ssl.cpython-*.so, which doesn't link the system libssl.so).
+	results = append(results, findBundledSSLModules()...)
+
+	return results
+}
+
+// bundledSSLSearchPaths are directories known to bundle their own OpenSSL
+// inside a Python _ssl extension module.
+var bundledSSLSearchPaths = []string{
+	"/usr/local/aws-cli/v2/*/dist/lib-dynload",
+}
+
+// findBundledSSLModules finds Python _ssl modules that statically embed OpenSSL.
+func findBundledSSLModules() []string {
+	var results []string
+	for _, pattern := range bundledSSLSearchPaths {
+		dirs, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, dir := range dirs {
+			matches, err := filepath.Glob(filepath.Join(dir, "_ssl.cpython-*.so"))
+			if err != nil {
+				continue
+			}
+			for _, path := range matches {
+				if hasStaticSSLSymbols(path) {
+					results = append(results, path)
+				}
+			}
+		}
+	}
 	return results
 }
 
@@ -140,6 +221,52 @@ func hasStaticSSLSymbols(path string) bool {
 			hasRead = true
 		}
 		if hasWrite && hasRead {
+			return true
+		}
+	}
+	return false
+}
+
+// hasS2NSymbols checks whether an ELF binary contains s2n_send and s2n_recv
+// as defined symbols, indicating embedded s2n-tls (e.g. AWS CRT).
+func hasS2NSymbols(path string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Check dynamic symbols first (shared libraries)
+	dynsyms, err := f.DynamicSymbols()
+	if err == nil {
+		var hasSend, hasRecv bool
+		for _, s := range dynsyms {
+			if s.Name == "s2n_send" && s.Value != 0 {
+				hasSend = true
+			}
+			if s.Name == "s2n_recv" && s.Value != 0 {
+				hasRecv = true
+			}
+			if hasSend && hasRecv {
+				return true
+			}
+		}
+	}
+
+	// Fall back to regular symbol table
+	syms, err := f.Symbols()
+	if err != nil {
+		return false
+	}
+	var hasSend, hasRecv bool
+	for _, s := range syms {
+		if s.Name == "s2n_send" && s.Value != 0 {
+			hasSend = true
+		}
+		if s.Name == "s2n_recv" && s.Value != 0 {
+			hasRecv = true
+		}
+		if hasSend && hasRecv {
 			return true
 		}
 	}

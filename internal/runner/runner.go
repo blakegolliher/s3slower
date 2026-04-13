@@ -308,6 +308,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		mode = ebpf.ProbeModeGnuTLS
 	case "nss":
 		mode = ebpf.ProbeModeNSS
+	case "s2n":
+		mode = ebpf.ProbeModeS2N
 	case "auto":
 		mode = ebpf.ProbeModeAuto
 	}
