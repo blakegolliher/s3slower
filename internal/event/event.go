@@ -88,7 +88,10 @@ func (e *S3Event) ParseStatusCode(data []byte) {
 	statusCode, contentLength := http.ParseHTTPResponse(data)
 	e.StatusCode = statusCode
 	e.IsError = statusCode >= 400
-	if contentLength > 0 {
+	// Use Content-Length for GET responses where the TLS read returns only
+	// the first record (e.g. 4096 bytes) but the full object is larger.
+	// Do NOT override for HEAD - it returns headers only, no body.
+	if contentLength > 0 && e.Method != "HEAD" {
 		e.ResponseSize = uint32(contentLength)
 	}
 }
