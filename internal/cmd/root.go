@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -116,9 +117,20 @@ to enable metrics collection.`,
 				cfg.TableFormat = appCfg.Screen.TableFormat
 				cfg.MaxURLLength = appCfg.Screen.MaxURLLength
 
-				// Apply file driver settings from config file
+				// Apply file driver settings from config file.
+				// samples_path encodes both the directory and the log file
+				// basename (the extension is treated as the rotation suffix
+				// and stripped). Empty / degenerate basenames fall back to
+				// the default prefix "s3slower" set by the runner.
 				if appCfg.File.SamplesPath != "" {
 					cfg.LogDir = filepath.Dir(appCfg.File.SamplesPath)
+					base := filepath.Base(appCfg.File.SamplesPath)
+					if ext := filepath.Ext(base); ext != "" {
+						base = strings.TrimSuffix(base, ext)
+					}
+					if base != "" && base != "." && base != "/" {
+						cfg.LogPrefix = base
+					}
 				}
 				if appCfg.File.MaxSizeMB > 0 {
 					cfg.LogMaxSizeMB = appCfg.File.MaxSizeMB

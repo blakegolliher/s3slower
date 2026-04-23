@@ -37,6 +37,7 @@ type Config struct {
 	PrometheusPort    int
 	PrometheusHost    string
 	LogDir            string
+	LogPrefix         string // Log file basename prefix; empty defaults to "s3slower".
 	LogMaxSizeMB      int
 	LogMaxBackups     int
 	OutputFormat      string // "table", "simple", "json"
@@ -134,9 +135,13 @@ func New(cfg Config) (*Runner, error) {
 
 	// Set up file logging
 	if cfg.EnableLogging {
+		prefix := cfg.LogPrefix
+		if prefix == "" {
+			prefix = "s3slower"
+		}
 		logCfg := logger.Config{
 			Dir:        cfg.LogDir,
-			Prefix:     "s3slower",
+			Prefix:     prefix,
 			MaxSizeMB:  cfg.LogMaxSizeMB,
 			MaxBackups: cfg.LogMaxBackups,
 		}
