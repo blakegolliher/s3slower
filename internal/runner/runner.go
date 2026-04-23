@@ -92,6 +92,12 @@ type Runner struct {
 	// targetLabels maps PIDs to their target's Prometheus labels
 	targetLabels map[uint32]map[string]string
 
+	// extraLabelKeys is the union of all per-target prom_labels keys.
+	// It mirrors the label set registered with the Prometheus vectors, so
+	// handleEvent can pre-fill every key (with "" when absent) and avoid a
+	// cardinality-mismatch panic inside client_golang.
+	extraLabelKeys []string
+
 	// hostname is the machine's hostname, used for Prometheus labels
 	hostname string
 
@@ -179,17 +185,22 @@ func New(cfg Config) (*Runner, error) {
 		}
 	}
 
-	// Set up Prometheus metrics (after targets are loaded for label collection)
+	// Set up Prometheus metrics (after targets are loaded for label collection).
+	// The extra-label union is captured on the Runner so handleEvent can
+	// pre-fill the same keys the vectors were registered with. Note: the union
+	// is frozen here; targets added later via hot-reload cannot introduce new
+	// label keys because the vectors themselves are registered once.
 	if cfg.EnablePrometheus {
 		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
-		extraLabels := config.CollectExtraLabelKeys(r.targets)
-		r.exporter = metrics.NewExporter(addr, extraLabels)
+		r.extraLabelKeys = config.CollectExtraLabelKeys(r.targets)
+		r.exporter = metrics.NewExporter(addr, r.extraLabelKeys)
 		r.metrics = r.exporter.Metrics()
 	}
 
 	// Set up target watcher for process monitoring
 	if len(r.targets) > 0 {
 		r.targetWatcher = watcher.NewTargetWatcher(r.targets, r.onProcessAttach)
+		r.targetWatcher.SetDetachCallback(r.onProcessDetach)
 	}
 
 	return r, nil
@@ -214,6 +225,17 @@ func (r *Runner) onProcessAttach(pid int, comm string, target *config.TargetConf
 		r.targetLabels[uint32(pid)] = target.PromLabels
 		r.mu.Unlock()
 	}
+}
+
+// onProcessDetach is invoked by the target watcher's CleanupExited path when
+// a PID is no longer present in /proc. It releases any per-PID label entry so
+// the map does not grow unbounded and recycled PIDs do not inherit stale
+// Prometheus labels from a prior process.
+func (r *Runner) onProcessDetach(pid int) {
+	r.mu.Lock()
+	delete(r.targetLabels, uint32(pid))
+	r.mu.Unlock()
+	r.debugf("Detached: pid=%d", pid)
 }
 
 // handleAppConfigChange is called when the app config file changes.
@@ -256,6 +278,7 @@ func (r *Runner) handleTargetsChange(targets []config.TargetConfig) {
 		// Create a new target watcher if we didn't have one
 		r.mu.Lock()
 		r.targetWatcher = watcher.NewTargetWatcher(targets, r.onProcessAttach)
+		r.targetWatcher.SetDetachCallback(r.onProcessDetach)
 		r.targetWatcher.Start()
 		r.mu.Unlock()
 	}
@@ -452,11 +475,18 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 			"endpoint":     evt.Endpoint,
 		}
 
-		// Merge target-specific labels if this PID has been matched
+		// Pre-fill every registered extra-label key so the call to
+		// CounterVec.With below never panics with cardinality mismatch.
+		// Events from PIDs not in targetLabels (startup race, non-target
+		// traffic that slips past isLikelyS3Event, or a target without its
+		// own prom_labels) get empty strings for the missing keys.
 		r.mu.RLock()
-		if extraLabels, ok := r.targetLabels[evt.PID]; ok {
-			for k, v := range extraLabels {
+		perPID := r.targetLabels[evt.PID]
+		for _, k := range r.extraLabelKeys {
+			if v, ok := perPID[k]; ok {
 				labels[k] = v
+			} else {
+				labels[k] = ""
 			}
 		}
 		r.mu.RUnlock()
@@ -549,11 +579,15 @@ func collectLocalAddrs(hostname string) map[string]bool {
 }
 
 // isLocalEndpoint checks if an endpoint (host or host:port) belongs to this machine.
+// Uses net.SplitHostPort so IPv6 literals like "[::1]:9000", "::1", and
+// "fe80::1" are handled correctly — collectLocalAddrs stores unbracketed
+// forms, so a naive strings.LastIndex(":") split misses every IPv6 case.
 func isLocalEndpoint(endpoint string, localAddrs map[string]bool) bool {
 	host := endpoint
-	if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
-		host = endpoint[:idx]
+	if h, _, err := net.SplitHostPort(endpoint); err == nil {
+		host = h
 	}
+	host = strings.Trim(host, "[]")
 	return localAddrs[host]
 }
 
