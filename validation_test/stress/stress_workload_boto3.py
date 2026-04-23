@@ -150,12 +150,21 @@ def do_put_mpu(s3, bucket, registry, logf):
     part_size = 5 * 1024 * 1024  # 5MB
     num_parts = random.randint(7, 14)  # 35-70MB total
     total_size = part_size * num_parts
-    ec = 0
+
+    # Create the MPU first in its own try so failures here don't need aborting.
     try:
         mpu = s3.create_multipart_upload(Bucket=bucket, Key=key)
-        upload_id = mpu["UploadId"]
-        log_op(logf, "MPU_CREATE", "POST", bucket, key, 0, 0)
+    except Exception as e:
+        print(f"  MPU_CREATE error: {e}", file=sys.stderr)
+        log_op(logf, "MPU_CREATE", "POST", bucket, key, 0, 1)
+        return
+    upload_id = mpu["UploadId"]
+    log_op(logf, "MPU_CREATE", "POST", bucket, key, 0, 0)
 
+    # Any failure in parts/complete leaves an in-progress MPU on the server.
+    # Abort it explicitly so the bucket stays clean over long runs (matches
+    # the awscli stress workload behavior).
+    try:
         parts = []
         for i in range(1, num_parts + 1):
             data = os.urandom(part_size)
@@ -174,8 +183,12 @@ def do_put_mpu(s3, bucket, registry, logf):
         registry.add(key, total_size)
     except Exception as e:
         print(f"  PUT_MPU error: {e}", file=sys.stderr)
-        ec = 1
-        log_op(logf, "PUT_OBJECT", "PUT", bucket, key, total_size, ec)
+        try:
+            s3.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+            log_op(logf, "MPU_ABORT", "POST", bucket, key, 0, 0)
+        except Exception as abort_err:
+            print(f"  MPU_ABORT error: {abort_err}", file=sys.stderr)
+            log_op(logf, "MPU_ABORT", "POST", bucket, key, 0, 1)
 
 
 def do_get_full(s3, bucket, registry, logf):

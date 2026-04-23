@@ -79,7 +79,7 @@ do_put_single() {
     result=$(run_elbencho \
         --s3endpoints "$ENDPOINT_URL" "${ELBENCHO_SSL_FLAG[@]}" \
         --s3key "$AWS_ACCESS_KEY_ID" --s3secret "$AWS_SECRET_ACCESS_KEY" \
-        -w -t 1 -n "$num_files" -s "${size_kb}k" -b "${size_kb}k" \
+        -w -t 1 -n 0 -N "$num_files" -s "${size_kb}k" -b "${size_kb}k" \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
 
@@ -108,7 +108,7 @@ do_put_large() {
     result=$(run_elbencho \
         --s3endpoints "$ENDPOINT_URL" "${ELBENCHO_SSL_FLAG[@]}" \
         --s3key "$AWS_ACCESS_KEY_ID" --s3secret "$AWS_SECRET_ACCESS_KEY" \
-        -w -t 1 -n "$num_files" -s "${size_mb}m" -b 5m \
+        -w -t 1 -n 0 -N "$num_files" -s "${size_mb}m" -b 5m \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
 
@@ -139,7 +139,7 @@ do_get_full() {
     result=$(run_elbencho \
         --s3endpoints "$ENDPOINT_URL" "${ELBENCHO_SSL_FLAG[@]}" \
         --s3key "$AWS_ACCESS_KEY_ID" --s3secret "$AWS_SECRET_ACCESS_KEY" \
-        -r -t 1 -n "$num_files" -s "$size" -b "$size" \
+        -r -t 1 -n 0 -N "$num_files" -s "$size" -b "$size" \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
     log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT" "GET" "$BUCKET" "$key" "$size" "$EC_VAL"
@@ -163,7 +163,7 @@ do_get_range() {
     result=$(run_elbencho \
         --s3endpoints "$ENDPOINT_URL" "${ELBENCHO_SSL_FLAG[@]}" \
         --s3key "$AWS_ACCESS_KEY_ID" --s3secret "$AWS_SECRET_ACCESS_KEY" \
-        -r -t 1 -n "$num_files" -s "$size" -b "$blocksize" \
+        -r -t 1 -n 0 -N "$num_files" -s "$size" -b "$blocksize" \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
     log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT" "GET" "$BUCKET" "$key" "$blocksize" "$EC_VAL"
@@ -182,7 +182,7 @@ do_head() {
     result=$(run_elbencho \
         --s3endpoints "$ENDPOINT_URL" "${ELBENCHO_SSL_FLAG[@]}" \
         --s3key "$AWS_ACCESS_KEY_ID" --s3secret "$AWS_SECRET_ACCESS_KEY" \
-        --stat -t 1 -n "$num_files" \
+        --stat -t 1 -n 0 -N "$num_files" \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
     log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "HEAD_OBJECT" "HEAD" "$BUCKET" "$key" 0 "$EC_VAL"
@@ -212,7 +212,7 @@ do_delete() {
     result=$(run_elbencho \
         --s3endpoints "$ENDPOINT_URL" "${ELBENCHO_SSL_FLAG[@]}" \
         --s3key "$AWS_ACCESS_KEY_ID" --s3secret "$AWS_SECRET_ACCESS_KEY" \
-        -F -t 1 -n "$num_files" \
+        -F -t 1 -n 0 -N "$num_files" \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
 
