@@ -13,18 +13,18 @@ groups:
         expr: rate(s3slower_request_bytes_total[5m]) + rate(s3slower_response_bytes_total[5m])
 
       - record: s3slower:request_duration_p50
-        expr: histogram_quantile(0.50, rate(s3slower_request_duration_ms_bucket[5m]))
+        expr: histogram_quantile(0.50, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le))
 
       - record: s3slower:request_duration_p95
-        expr: histogram_quantile(0.95, rate(s3slower_request_duration_ms_bucket[5m]))
+        expr: histogram_quantile(0.95, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le))
 
       - record: s3slower:request_duration_p99
-        expr: histogram_quantile(0.99, rate(s3slower_request_duration_ms_bucket[5m]))
+        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le))
 
   - name: s3slower.alerts
     rules:
       - alert: S3SlowerHighLatency
-        expr: histogram_quantile(0.95, rate(s3slower_request_duration_ms_bucket[5m])) > 1000
+        expr: histogram_quantile(0.95, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, hostname, comm, s3_operation)) > 1000
         for: 5m
         labels:
           severity: warning
@@ -54,7 +54,7 @@ groups:
           description: "S3Slower Prometheus exporter has been unreachable for over 1 minute"
 
       - alert: S3SlowerVeryHighLatency
-        expr: histogram_quantile(0.99, rate(s3slower_request_duration_ms_bucket[5m])) > 5000
+        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, hostname)) > 5000
         for: 1m
         labels:
           severity: critical
