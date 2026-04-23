@@ -103,7 +103,7 @@ data:
           description: "S3Slower exporter on {{ $labels.kubernetes_node_name }} has been down for more than 1 minute"
 
       - alert: S3SlowerVeryHighLatency
-        expr: histogram_quantile(0.99, rate(s3slower_request_duration_ms_bucket[5m])) > 5000
+        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, hostname)) > 5000
         for: 1m
         labels:
           severity: critical
