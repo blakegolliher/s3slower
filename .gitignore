@@ -38,7 +38,11 @@ Thumbs.db
 *.tmp
 *.temp
 
-# Claude Code
+# Python
+__pycache__/
+*.pyc
+
+# IDE / tool artifacts
 .claude/
 step-by-step.md
 monitoring/DASHBOARD_SPEC.md

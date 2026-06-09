@@ -198,7 +198,11 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.EnablePrometheus {
 		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
 		r.extraLabelKeys = config.CollectExtraLabelKeys(r.targets)
-		r.exporter = metrics.NewExporter(addr, r.extraLabelKeys)
+		exporter, err := metrics.NewExporter(addr, r.extraLabelKeys)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create prometheus exporter: %w", err)
+		}
+		r.exporter = exporter
 		r.metrics = r.exporter.Metrics()
 	}
 
@@ -332,6 +336,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		mode = ebpf.ProbeModeGnuTLS
 	case "nss":
 		mode = ebpf.ProbeModeNSS
+	case "s2n":
+		mode = ebpf.ProbeModeS2N
+	case "gotls":
+		mode = ebpf.ProbeModeGoTLS
 	case "auto":
 		mode = ebpf.ProbeModeAuto
 	}
@@ -411,6 +419,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	// Main event loop
 	for {
@@ -424,9 +433,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			return nil
 
 		case <-cleanupTicker.C:
-			if r.targetWatcher != nil {
-				r.targetWatcher.CleanupExited()
-				r.debugf("Cleanup: %d attached PIDs", len(r.targetWatcher.GetAttached()))
+			r.mu.RLock()
+			tw := r.targetWatcher
+			r.mu.RUnlock()
+			if tw != nil {
+				tw.CleanupExited()
+				r.debugf("Cleanup: %d attached PIDs", len(tw.GetAttached()))
 			}
 
 		case evt, ok := <-r.pipeline.Events():
@@ -605,6 +617,9 @@ func (r *Runner) debugf(format string, args ...interface{}) {
 
 // Close cleans up resources.
 func (r *Runner) Close() error {
+	if r.exporter != nil {
+		r.exporter.Stop()
+	}
 	if r.targetWatcher != nil {
 		r.targetWatcher.Stop()
 	}

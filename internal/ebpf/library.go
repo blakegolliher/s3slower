@@ -4,6 +4,7 @@ package ebpf
 import (
 	"debug/elf"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +38,51 @@ func (f *DefaultLibraryFinder) FindNSS() (string, error) {
 	return findLibrary(ProbeModeNSS)
 }
 
+// FindS2N returns the path to an s2n-tls library (AWS CRT or system libs2n).
+func (f *DefaultLibraryFinder) FindS2N() (string, error) {
+	// AWS CLI v2 bundles s2n inside _awscrt.abi3.so
+	awsCRTPaths := []string{
+		"/usr/local/aws-cli/v2/current/dist/_awscrt.abi3.so",
+	}
+
+	// Check versioned AWS CLI installs
+	if matches, err := filepath.Glob("/usr/local/aws-cli/v2/*/dist/_awscrt.abi3.so"); err == nil {
+		awsCRTPaths = append(awsCRTPaths, matches...)
+	}
+
+	// Check pip-installed awscrt
+	pipPatterns := []string{
+		"/usr/lib/python*/site-packages/awscrt/_awscrt.abi3.so",
+		"/usr/lib64/python*/site-packages/awscrt/_awscrt.abi3.so",
+		"/usr/local/lib/python*/site-packages/awscrt/_awscrt.abi3.so",
+		"/usr/local/lib/python*/dist-packages/awscrt/_awscrt.abi3.so",
+	}
+	for _, pattern := range pipPatterns {
+		if matches, err := filepath.Glob(pattern); err == nil {
+			awsCRTPaths = append(awsCRTPaths, matches...)
+		}
+	}
+
+	for _, path := range awsCRTPaths {
+		if hasS2NSymbols(path) {
+			return path, nil
+		}
+	}
+
+	// Check for system libs2n.so
+	if paths := findViaLdconfig("libs2n"); len(paths) > 0 {
+		return paths[0], nil
+	}
+
+	for _, dir := range getCommonLibraryPaths() {
+		if path := findLibraryByPattern(dir, "libs2n.so*"); path != "" {
+			return path, nil
+		}
+	}
+
+	return "", errors.New("s2n-tls library not found")
+}
+
 // FindAll returns all available TLS libraries.
 func (f *DefaultLibraryFinder) FindAll() map[ProbeMode]string {
 	result := make(map[ProbeMode]string)
@@ -50,8 +96,204 @@ func (f *DefaultLibraryFinder) FindAll() map[ProbeMode]string {
 	if path, err := f.FindNSS(); err == nil {
 		result[ProbeModeNSS] = path
 	}
+	if path, err := f.FindS2N(); err == nil {
+		result[ProbeModeS2N] = path
+	}
 
 	return result
+}
+
+// knownGoS3Binaries lists S3 client tools written in Go that use crypto/tls.
+var knownGoS3Binaries = []string{
+	"mc",
+	"warp",
+	"s3-benchmark",
+}
+
+// FindGoTLS returns paths to Go binaries that use crypto/tls.
+// Each Go binary needs its own uprobe attachment since Go statically links
+// crypto/tls (it's not a shared library).
+func (f *DefaultLibraryFinder) FindGoTLS() []string {
+	var results []string
+	seen := make(map[string]bool)
+
+	// Check known Go-based S3 tools
+	for _, name := range knownGoS3Binaries {
+		path := findExecutable(name)
+		if path == "" {
+			continue
+		}
+		if hasGoTLSSymbols(path) {
+			results = append(results, path)
+			seen[path] = true
+		}
+	}
+
+	// Scan /proc for running Go processes that use crypto/tls
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return results
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		// Only look at numeric (PID) directories
+		if len(entry.Name()) == 0 || entry.Name()[0] < '0' || entry.Name()[0] > '9' {
+			continue
+		}
+		exePath := filepath.Join("/proc", entry.Name(), "exe")
+		resolved, err := os.Readlink(exePath)
+		if err != nil {
+			continue
+		}
+		if seen[resolved] {
+			continue
+		}
+		if hasGoTLSSymbols(resolved) {
+			results = append(results, resolved)
+			seen[resolved] = true
+		}
+	}
+
+	return results
+}
+
+// goTLSAnalysis holds the results of analyzing a Go binary for crypto/tls.
+type goTLSAnalysis struct {
+	isGo       bool
+	hasTLS     bool
+	retOffsets []uint64
+}
+
+// analyzeGoTLSBinary opens an ELF binary once and determines whether it
+// is a Go binary using crypto/tls, and if so, finds the RET instruction
+// offsets in crypto/tls.(*Conn).Read for uprobe-at-RET attachment.
+// This replaces the separate isGoBinary + hasGoTLSSymbols + findRetOffsets
+// calls, cutting discovery time from ~40ms (3 ELF opens + objdump fork)
+// to ~5ms (single ELF open + in-process decode).
+func analyzeGoTLSBinary(path string) (*goTLSAnalysis, error) {
+	f, err := elf.Open(path)
+	if err != nil {
+		return &goTLSAnalysis{}, nil
+	}
+	defer f.Close()
+
+	// Fast check: .gopclntab is present in all Go binaries.
+	if f.Section(".gopclntab") == nil {
+		return &goTLSAnalysis{}, nil
+	}
+
+	syms, err := f.Symbols()
+	if err != nil {
+		return &goTLSAnalysis{isGo: true}, nil
+	}
+
+	// Scan for crypto/tls symbols and record Read's address/size.
+	var hasWrite, hasRead bool
+	var readAddr, readSize uint64
+	for _, s := range syms {
+		switch s.Name {
+		case "crypto/tls.(*Conn).Write":
+			hasWrite = true
+		case "crypto/tls.(*Conn).Read":
+			hasRead = true
+			readAddr = s.Value
+			readSize = s.Size
+		}
+		if hasWrite && hasRead {
+			break
+		}
+	}
+
+	if !hasWrite || !hasRead {
+		return &goTLSAnalysis{isGo: true}, nil
+	}
+
+	// If size is 0, estimate from next symbol.
+	if readSize == 0 {
+		nextAddr := uint64(0)
+		for _, s := range syms {
+			if s.Value > readAddr && (nextAddr == 0 || s.Value < nextAddr) {
+				nextAddr = s.Value
+			}
+		}
+		if nextAddr > readAddr {
+			readSize = nextAddr - readAddr
+		} else {
+			return nil, fmt.Errorf("cannot determine size of crypto/tls.(*Conn).Read")
+		}
+	}
+
+	// Read just the function bytes from .text (not the whole section).
+	text := f.Section(".text")
+	if text == nil {
+		return nil, fmt.Errorf(".text section not found")
+	}
+	if readAddr < text.Addr {
+		return nil, fmt.Errorf("symbol address before .text start")
+	}
+	funcOffset := int64(readAddr - text.Addr)
+	code := make([]byte, readSize)
+	n, err := text.ReadAt(code, funcOffset)
+	if err != nil && n == 0 {
+		return nil, fmt.Errorf("failed to read function bytes: %w", err)
+	}
+	code = code[:n]
+
+	// Walk the instruction stream to find actual RET (0xC3) instructions.
+	var retOffsets []uint64
+	pos := 0
+	for pos < len(code) {
+		insnLen := x86InsnLen(code[pos:])
+		if insnLen == 0 {
+			break // unknown instruction, stop decoding
+		}
+		if code[pos] == 0xC3 {
+			retOffsets = append(retOffsets, uint64(pos))
+		}
+		pos += insnLen
+	}
+
+	if len(retOffsets) == 0 {
+		return nil, fmt.Errorf("no RET instructions found in crypto/tls.(*Conn).Read")
+	}
+
+	return &goTLSAnalysis{
+		isGo:       true,
+		hasTLS:     true,
+		retOffsets: retOffsets,
+	}, nil
+}
+
+// hasGoTLSSymbols checks whether an ELF binary contains Go crypto/tls
+// symbols (crypto/tls.(*Conn).Write and Read), indicating a Go program
+// that uses the built-in TLS package.
+func hasGoTLSSymbols(path string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	syms, err := f.Symbols()
+	if err != nil {
+		return false
+	}
+
+	var hasWrite, hasRead bool
+	for _, s := range syms {
+		if s.Name == "crypto/tls.(*Conn).Write" && s.Value != 0 {
+			hasWrite = true
+		}
+		if s.Name == "crypto/tls.(*Conn).Read" && s.Value != 0 {
+			hasRead = true
+		}
+		if hasWrite && hasRead {
+			return true
+		}
+	}
+	return false
 }
 
 // knownStaticBinaries lists S3 client tools that are commonly statically linked.
@@ -69,7 +311,7 @@ var extraSearchDirs = []string{
 	"/opt/bin",
 }
 
-// FindStaticBinaries returns paths to statically-linked executables that
+// FindStaticBinaries returns paths to executables and shared libraries that
 // contain SSL_write/SSL_read symbols. These need their own uprobe attachment
 // since they don't use the system's shared libssl.
 func (f *DefaultLibraryFinder) FindStaticBinaries() []string {
@@ -85,6 +327,39 @@ func (f *DefaultLibraryFinder) FindStaticBinaries() []string {
 		}
 	}
 
+	// Find bundled Python SSL modules (e.g. AWS CLI v2 ships its own OpenSSL
+	// inside _ssl.cpython-*.so, which doesn't link the system libssl.so).
+	results = append(results, findBundledSSLModules()...)
+
+	return results
+}
+
+// bundledSSLSearchPaths are directories known to bundle their own OpenSSL
+// inside a Python _ssl extension module.
+var bundledSSLSearchPaths = []string{
+	"/usr/local/aws-cli/v2/*/dist/lib-dynload",
+}
+
+// findBundledSSLModules finds Python _ssl modules that statically embed OpenSSL.
+func findBundledSSLModules() []string {
+	var results []string
+	for _, pattern := range bundledSSLSearchPaths {
+		dirs, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, dir := range dirs {
+			matches, err := filepath.Glob(filepath.Join(dir, "_ssl.cpython-*.so"))
+			if err != nil {
+				continue
+			}
+			for _, path := range matches {
+				if hasStaticSSLSymbols(path) {
+					results = append(results, path)
+				}
+			}
+		}
+	}
 	return results
 }
 
@@ -140,6 +415,52 @@ func hasStaticSSLSymbols(path string) bool {
 			hasRead = true
 		}
 		if hasWrite && hasRead {
+			return true
+		}
+	}
+	return false
+}
+
+// hasS2NSymbols checks whether an ELF binary contains s2n_send and s2n_recv
+// as defined symbols, indicating embedded s2n-tls (e.g. AWS CRT).
+func hasS2NSymbols(path string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Check dynamic symbols first (shared libraries)
+	dynsyms, err := f.DynamicSymbols()
+	if err == nil {
+		var hasSend, hasRecv bool
+		for _, s := range dynsyms {
+			if s.Name == "s2n_send" && s.Value != 0 {
+				hasSend = true
+			}
+			if s.Name == "s2n_recv" && s.Value != 0 {
+				hasRecv = true
+			}
+			if hasSend && hasRecv {
+				return true
+			}
+		}
+	}
+
+	// Fall back to regular symbol table
+	syms, err := f.Symbols()
+	if err != nil {
+		return false
+	}
+	var hasSend, hasRecv bool
+	for _, s := range syms {
+		if s.Name == "s2n_send" && s.Value != 0 {
+			hasSend = true
+		}
+		if s.Name == "s2n_recv" && s.Value != 0 {
+			hasRecv = true
+		}
+		if hasSend && hasRecv {
 			return true
 		}
 	}

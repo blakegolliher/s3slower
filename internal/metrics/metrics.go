@@ -2,6 +2,7 @@
 package metrics
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -124,16 +125,18 @@ type Exporter struct {
 }
 
 // NewExporter creates a new Prometheus exporter.
-func NewExporter(addr string, extraLabels []string) *Exporter {
+func NewExporter(addr string, extraLabels []string) (*Exporter, error) {
 	reg := prometheus.NewRegistry()
 	metrics := New(extraLabels)
-	metrics.Register(reg)
+	if err := metrics.Register(reg); err != nil {
+		return nil, fmt.Errorf("failed to register metrics: %w", err)
+	}
 
 	return &Exporter{
 		metrics:  metrics,
 		registry: reg,
 		addr:     addr,
-	}
+	}, nil
 }
 
 // Metrics returns the metrics instance.

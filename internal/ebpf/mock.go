@@ -91,9 +91,35 @@ func (m *MockTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 		m.probes = append(m.probes, "gnutls_record_recv", "gnutls_record_send")
 	case ProbeModeNSS:
 		m.probes = append(m.probes, "PR_Read", "PR_Write")
+	case ProbeModeS2N:
+		m.probes = append(m.probes, "s2n_send", "s2n_recv")
+	case ProbeModeGoTLS:
+		m.probes = append(m.probes, "crypto/tls.(*Conn).Write", "crypto/tls.(*Conn).Read")
 	}
 
 	m.attachTime = time.Now()
+	return nil
+}
+
+// AttachGoTLSUprobes attaches mock Go TLS uprobes.
+func (m *MockTracer) AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.loaded {
+		return errors.New("tracer not loaded")
+	}
+	if m.uprobeErr != nil {
+		return m.uprobeErr
+	}
+
+	m.probes = append(m.probes, "crypto/tls.(*Conn).Write", "crypto/tls.(*Conn).Read")
+	m.attachTime = time.Now()
+	return nil
+}
+
+// WatchExec is a no-op in mock mode.
+func (m *MockTracer) WatchExec(callback func(pid uint32)) error {
 	return nil
 }
 
@@ -240,12 +266,15 @@ func (m *MockTracer) SetUprobeError(err error) {
 type MockLibraryFinder struct {
 	mu sync.RWMutex
 
-	opensslPath string
-	opensslErr  error
-	gnutlsPath  string
-	gnutlsErr   error
-	nssPath     string
-	nssErr      error
+	opensslPath  string
+	opensslErr   error
+	gnutlsPath   string
+	gnutlsErr    error
+	nssPath      string
+	nssErr       error
+	s2nPath      string
+	s2nErr       error
+	goTLSPaths   []string
 }
 
 // NewMockLibraryFinder creates a new mock library finder.
@@ -286,6 +315,17 @@ func (m *MockLibraryFinder) FindNSS() (string, error) {
 	return m.nssPath, nil
 }
 
+// FindS2N returns the mock s2n-tls path.
+func (m *MockLibraryFinder) FindS2N() (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.s2nErr != nil {
+		return "", m.s2nErr
+	}
+	return m.s2nPath, nil
+}
+
 // FindAll returns all mock libraries.
 func (m *MockLibraryFinder) FindAll() map[ProbeMode]string {
 	m.mu.RLock()
@@ -302,7 +342,20 @@ func (m *MockLibraryFinder) FindAll() map[ProbeMode]string {
 	if m.nssErr == nil && m.nssPath != "" {
 		result[ProbeModeNSS] = m.nssPath
 	}
+	if m.s2nErr == nil && m.s2nPath != "" {
+		result[ProbeModeS2N] = m.s2nPath
+	}
 
+	return result
+}
+
+// FindGoTLS returns mock Go TLS binary paths.
+func (m *MockLibraryFinder) FindGoTLS() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]string, len(m.goTLSPaths))
+	copy(result, m.goTLSPaths)
 	return result
 }
 
@@ -336,4 +389,12 @@ func (m *MockLibraryFinder) SetNSSPath(path string, err error) {
 
 	m.nssPath = path
 	m.nssErr = err
+}
+
+// SetGoTLSPaths sets the mock Go TLS binary paths.
+func (m *MockLibraryFinder) SetGoTLSPaths(paths []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.goTLSPaths = paths
 }

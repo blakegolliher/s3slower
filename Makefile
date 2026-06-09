@@ -18,6 +18,8 @@ VERSION := $(shell cat version.txt 2>/dev/null || echo "0.1.0")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 BUILD_TS := $(shell date -u +"%Y%m%d%H%M%S")
+GOBIN := $(shell go env GOPATH)/bin
+NFPM := $(GOBIN)/nfpm
 
 # Go build flags
 LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE) -s -w"
@@ -34,10 +36,17 @@ DIST_DIR := dist
 # Default target
 all: build
 
+# BPF source and generated output
+BPF_SRC := internal/ebpf/bpf/s3slower.c
+BPF_OBJ := internal/ebpf/bpf_x86_bpfel.o
+
 # Build the binary
 build: $(BUILD_DIR)/$(BINARY_NAME)
 
-$(BUILD_DIR)/$(BINARY_NAME): $(shell find . -name '*.go' -not -path './.git/*')
+$(BPF_OBJ): $(BPF_SRC)
+	$(MAKE) generate
+
+$(BUILD_DIR)/$(BINARY_NAME): $(BPF_OBJ) $(shell find . -name '*.go' -not -path './.git/*')
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 go build $(GOFLAGS) $(LDFLAGS) -o $@ ./cmd/s3slower
 
@@ -111,14 +120,15 @@ generate:
 	cd internal/ebpf && GOPACKAGE=ebpf go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86" -target amd64 bpf bpf/s3slower.c -- $(LIBBPF_INCLUDE) -Ibpf
 
 # Build RPM package (timestamped to the second)
-rpm: build
-	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
-	VERSION=$(VERSION) RELEASE=$(BUILD_TS) nfpm package --config nfpm.yaml --packager rpm --target .
+rpm: build $(NFPM)
+	VERSION=$(VERSION) RELEASE=$(BUILD_TS) $(NFPM) package --config nfpm.yaml --packager rpm --target .
 
 # Build DEB package (timestamped to the second)
-deb: build
-	@which nfpm > /dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
-	VERSION=$(VERSION) RELEASE=$(BUILD_TS) nfpm package --config nfpm.yaml --packager deb --target .
+deb: build $(NFPM)
+	VERSION=$(VERSION) RELEASE=$(BUILD_TS) $(NFPM) package --config nfpm.yaml --packager deb --target .
+
+$(NFPM):
+	go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
 
 # Build all packages
 packages: rpm deb

@@ -25,6 +25,12 @@ type Pipeline struct {
 	minLatencyUs   uint64
 	libraryPath    string
 	libraryFinder  LibraryFinder
+
+	// checkedGoTLS caches binary paths we've already inspected for
+	// Go crypto/tls symbols (true = has them, false = doesn't).
+	// attachedGoTLS tracks binaries with uprobes successfully attached.
+	checkedGoTLS  map[string]bool
+	attachedGoTLS map[string]bool
 }
 
 func (p *Pipeline) debugf(format string, args ...interface{}) {
@@ -134,6 +140,14 @@ func (p *Pipeline) Start() error {
 	p.running = true
 	p.stopCh = make(chan struct{})
 
+	// In auto or gotls mode (without an explicit path), watch for new
+	// process starts so Go TLS binaries are discovered instantly.
+	if p.mode == ProbeModeAuto || (p.mode == ProbeModeGoTLS && p.libraryPath == "") {
+		if err := p.tracer.WatchExec(p.onExec); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: exec watcher unavailable, Go TLS auto-discovery disabled: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
@@ -144,7 +158,7 @@ func (p *Pipeline) attachProbes() error {
 	case ProbeModeHTTP:
 		return p.tracer.AttachKprobes()
 
-	case ProbeModeOpenSSL, ProbeModeGnuTLS, ProbeModeNSS:
+	case ProbeModeOpenSSL, ProbeModeGnuTLS, ProbeModeNSS, ProbeModeS2N:
 		libPath := p.libraryPath
 		if libPath == "" {
 			// Auto-detect library path
@@ -156,12 +170,23 @@ func (p *Pipeline) attachProbes() error {
 				libPath, err = p.libraryFinder.FindGnuTLS()
 			case ProbeModeNSS:
 				libPath, err = p.libraryFinder.FindNSS()
+			case ProbeModeS2N:
+				libPath, err = p.libraryFinder.FindS2N()
 			}
 			if err != nil {
 				return fmt.Errorf("failed to find %s library: %w", p.mode, err)
 			}
 		}
 		return p.tracer.AttachUprobes(libPath, p.mode)
+
+	case ProbeModeGoTLS:
+		if p.libraryPath != "" {
+			return p.tracer.AttachUprobes(p.libraryPath, ProbeModeGoTLS)
+		}
+		// Initial scan; background scanner (started in Start()) picks up
+		// binaries that appear later.
+		p.scanGoTLS()
+		return nil
 
 	case ProbeModeAuto:
 		// Try to attach all available probes
@@ -175,7 +200,7 @@ func (p *Pipeline) attachProbes() error {
 		for mode, path := range libs {
 			if err := p.tracer.AttachUprobes(path, mode); err != nil {
 				// Log but don't fail - some libraries may not be available
-				fmt.Printf("warning: failed to attach %s uprobes to %s: %v\n", mode, path, err)
+				fmt.Fprintf(os.Stderr, "warning: failed to attach %s uprobes to %s: %v\n", mode, path, err)
 			}
 		}
 
@@ -183,9 +208,13 @@ func (p *Pipeline) attachProbes() error {
 		for _, binPath := range p.libraryFinder.FindStaticBinaries() {
 			p.debugf("Found statically-linked SSL binary: %s", binPath)
 			if err := p.tracer.AttachUprobes(binPath, ProbeModeOpenSSL); err != nil {
-				fmt.Printf("warning: failed to attach uprobes to %s: %v\n", binPath, err)
+				fmt.Fprintf(os.Stderr, "warning: failed to attach uprobes to %s: %v\n", binPath, err)
 			}
 		}
+
+		// Initial scan for Go binaries with crypto/tls; the background
+		// scanner (started in Start()) picks up binaries that appear later.
+		p.scanGoTLS()
 		return nil
 
 	default:
@@ -292,6 +321,88 @@ func (p *Pipeline) SetTargetPID(pid uint32) {
 
 	p.targetPID = pid
 	p.tracer.SetTargetPID(pid)
+}
+
+// onExec is called by WatchExec for every newly exec'd process.
+// It checks if the binary is a Go program using crypto/tls and
+// attaches uprobes if so.
+func (p *Pipeline) onExec(pid uint32) {
+	exePath := fmt.Sprintf("/proc/%d/exe", pid)
+	resolved, err := os.Readlink(exePath)
+	if err != nil {
+		return // process may have already exited
+	}
+
+	p.mu.Lock()
+	// Fast path: we've already inspected this binary.
+	if p.checkedGoTLS != nil {
+		if _, ok := p.checkedGoTLS[resolved]; ok {
+			alreadyAttached := p.attachedGoTLS[resolved]
+			p.mu.Unlock()
+			if alreadyAttached {
+				return
+			}
+			// Previously analyzed but attach failed; fall through to retry.
+		} else {
+			p.mu.Unlock()
+		}
+	} else {
+		p.mu.Unlock()
+	}
+
+	// Single-pass analysis: open ELF once, check Go + TLS + find RET offsets.
+	analysis, err := analyzeGoTLSBinary(resolved)
+	if err != nil {
+		p.debugf("Go TLS analysis failed for %s: %v", resolved, err)
+		return
+	}
+
+	p.mu.Lock()
+	if p.checkedGoTLS == nil {
+		p.checkedGoTLS = make(map[string]bool)
+	}
+	p.checkedGoTLS[resolved] = analysis.hasTLS
+	p.mu.Unlock()
+
+	if !analysis.hasTLS {
+		return
+	}
+
+	p.debugf("Discovered Go TLS binary: %s (PID %d)", resolved, pid)
+	if err := p.tracer.AttachGoTLSUprobes(resolved, analysis.retOffsets); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to attach Go TLS uprobes to %s: %v\n", resolved, err)
+		return
+	}
+
+	p.mu.Lock()
+	if p.attachedGoTLS == nil {
+		p.attachedGoTLS = make(map[string]bool)
+	}
+	p.attachedGoTLS[resolved] = true
+	p.mu.Unlock()
+}
+
+// scanGoTLS does an initial one-shot scan for Go TLS binaries that
+// are already running or installed at known paths.
+func (p *Pipeline) scanGoTLS() {
+	for _, binPath := range p.libraryFinder.FindGoTLS() {
+		if p.attachedGoTLS[binPath] {
+			continue
+		}
+		analysis, err := analyzeGoTLSBinary(binPath)
+		if err != nil || !analysis.hasTLS {
+			continue
+		}
+		p.debugf("Found Go TLS binary: %s", binPath)
+		if err := p.tracer.AttachGoTLSUprobes(binPath, analysis.retOffsets); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to attach Go TLS uprobes to %s: %v\n", binPath, err)
+			continue
+		}
+		if p.attachedGoTLS == nil {
+			p.attachedGoTLS = make(map[string]bool)
+		}
+		p.attachedGoTLS[binPath] = true
+	}
 }
 
 // SetMinLatency updates the minimum latency filter.

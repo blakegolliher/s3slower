@@ -26,10 +26,12 @@ const (
 // BPFTracer implements the Tracer interface using cilium/ebpf.
 type BPFTracer struct {
 	mu sync.RWMutex
+	wg sync.WaitGroup
 
 	spec       *ebpf.CollectionSpec
 	collection *ebpf.Collection
 	reader     *perf.Reader
+	execReader *perf.Reader
 
 	links      []link.Link
 	callback   EventCallback
@@ -114,10 +116,14 @@ func (t *BPFTracer) Close() error {
 		t.running = false
 	}
 
-	// Close perf reader
+	// Close perf readers
 	if t.reader != nil {
 		t.reader.Close()
 		t.reader = nil
+	}
+	if t.execReader != nil {
+		t.execReader.Close()
+		t.execReader = nil
 	}
 
 	// Detach all probes
@@ -281,43 +287,57 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 		return fmt.Errorf("failed to open library %s: %w", libraryPath, err)
 	}
 
-	var probeNames []struct {
-		symbol  string
-		program string
-		isRet   bool
+	type uprobe struct {
+		symbol   string
+		program  string
+		isRet    bool
+		optional bool // if true, failure to attach is non-fatal
 	}
+
+	var probeNames []uprobe
 
 	switch mode {
 	case ProbeModeOpenSSL:
-		probeNames = []struct {
-			symbol  string
-			program string
-			isRet   bool
-		}{
-			{"SSL_write", "uprobe_ssl_write", false},
-			{"SSL_read", "uprobe_ssl_read", false},
-			{"SSL_read", "uretprobe_ssl_read", true},
+		probeNames = []uprobe{
+			{"SSL_write", "uprobe_ssl_write", false, false},
+			{"SSL_read", "uprobe_ssl_read", false, false},
+			{"SSL_read", "uretprobe_ssl_read", true, false},
+			// Modern OpenSSL 3.x / Python 3.10+ uses the _ex variants exclusively.
+			// SSL_write_ex has the same entry args (ssl, buf, size) so reuses the write probe.
+			// SSL_read_ex returns 1/0 (not byte count) so needs dedicated probes
+			// that read the actual count from the 4th param (size_t *readbytes).
+			// Optional because older OpenSSL may not export these symbols.
+			{"SSL_write_ex", "uprobe_ssl_write", false, true},
+			{"SSL_read_ex", "uprobe_ssl_read_ex", false, true},
+			{"SSL_read_ex", "uretprobe_ssl_read_ex", true, true},
 		}
 	case ProbeModeGnuTLS:
-		probeNames = []struct {
-			symbol  string
-			program string
-			isRet   bool
-		}{
-			{"gnutls_record_send", "uprobe_gnutls_send", false},
-			{"gnutls_record_recv", "uprobe_gnutls_recv", false},
-			{"gnutls_record_recv", "uretprobe_gnutls_recv", true},
+		probeNames = []uprobe{
+			{"gnutls_record_send", "uprobe_gnutls_send", false, false},
+			{"gnutls_record_recv", "uprobe_gnutls_recv", false, false},
+			{"gnutls_record_recv", "uretprobe_gnutls_recv", true, false},
 		}
 	case ProbeModeNSS:
-		probeNames = []struct {
-			symbol  string
-			program string
-			isRet   bool
-		}{
-			{"PR_Write", "uprobe_pr_write", false},
-			{"PR_Read", "uprobe_pr_read", false},
-			{"PR_Read", "uretprobe_pr_read", true},
+		probeNames = []uprobe{
+			{"PR_Write", "uprobe_pr_write", false, false},
+			{"PR_Read", "uprobe_pr_read", false, false},
+			{"PR_Read", "uretprobe_pr_read", true, false},
 		}
+	case ProbeModeS2N:
+		// s2n_send/s2n_recv have the same arg layout as SSL_write/SSL_read
+		// (ctx, buf, size) so we reuse the SSL BPF programs.
+		probeNames = []uprobe{
+			{"s2n_send", "uprobe_ssl_write", false, false},
+			{"s2n_recv", "uprobe_ssl_read", false, false},
+			{"s2n_recv", "uretprobe_ssl_read", true, false},
+		}
+	case ProbeModeGoTLS:
+		// Analyze the binary and attach in one call.
+		analysis, err := analyzeGoTLSBinary(libraryPath)
+		if err != nil || !analysis.hasTLS {
+			return fmt.Errorf("binary %s does not have Go TLS symbols", libraryPath)
+		}
+		return t.AttachGoTLSUprobes(libraryPath, analysis.retOffsets)
 	default:
 		return fmt.Errorf("unsupported probe mode: %s", mode)
 	}
@@ -335,7 +355,67 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 			l, err = ex.Uprobe(p.symbol, prog, nil)
 		}
 		if err != nil {
+			if p.optional {
+				continue
+			}
 			return fmt.Errorf("failed to attach uprobe %s: %w", p.symbol, err)
+		}
+		t.links = append(t.links, l)
+	}
+
+	t.attachTime = time.Now()
+	return nil
+}
+
+// AttachGoTLSUprobes attaches Go crypto/tls uprobes with pre-computed
+// RET offsets. Uretprobes crash Go programs (goroutine stack copying
+// corrupts the trampoline), so we attach regular uprobes at each RET
+// instruction within crypto/tls.(*Conn).Read instead.
+func (t *BPFTracer) AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.collection == nil {
+		return errors.New("tracer not loaded")
+	}
+
+	if err := validateLibraryPath(binaryPath); err != nil {
+		return fmt.Errorf("invalid binary path: %w", err)
+	}
+
+	ex, err := link.OpenExecutable(binaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to open binary %s: %w", binaryPath, err)
+	}
+
+	// Entry probes for Write and Read.
+	entryProbes := []struct {
+		symbol, program string
+	}{
+		{"crypto/tls.(*Conn).Write", "uprobe_go_tls_write"},
+		{"crypto/tls.(*Conn).Read", "uprobe_go_tls_read"},
+	}
+	for _, p := range entryProbes {
+		prog, ok := t.collection.Programs[p.program]
+		if !ok {
+			return fmt.Errorf("program %s not found", p.program)
+		}
+		l, err := ex.Uprobe(p.symbol, prog, nil)
+		if err != nil {
+			return fmt.Errorf("failed to attach uprobe %s: %w", p.symbol, err)
+		}
+		t.links = append(t.links, l)
+	}
+
+	// Return probes at each RET instruction in Read.
+	retProg, ok := t.collection.Programs["uretprobe_go_tls_read"]
+	if !ok {
+		return errors.New("uretprobe_go_tls_read program not found")
+	}
+	for _, offset := range readRetOffsets {
+		l, err := ex.Uprobe("crypto/tls.(*Conn).Read", retProg, &link.UprobeOptions{Offset: offset})
+		if err != nil {
+			continue
 		}
 		t.links = append(t.links, l)
 	}
@@ -389,6 +469,7 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 	t.mu.Unlock()
 
 	// Start reading events in a goroutine
+	t.wg.Add(1)
 	go t.readEvents()
 
 	return nil
@@ -396,6 +477,7 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 
 // readEvents reads events from the perf buffer.
 func (t *BPFTracer) readEvents() {
+	defer t.wg.Done()
 	for {
 		select {
 		case <-t.stopCh:
@@ -452,12 +534,11 @@ func parseRawEvent(data []byte) (*RawEvent, error) {
 	return event, nil
 }
 
-// Stop stops reading events.
+// Stop stops reading events and waits for the reader goroutine to exit.
 func (t *BPFTracer) Stop() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if !t.running {
+		t.mu.Unlock()
 		return
 	}
 
@@ -466,6 +547,81 @@ func (t *BPFTracer) Stop() {
 
 	if t.reader != nil {
 		t.reader.Close()
+		t.reader = nil
+	}
+	if t.execReader != nil {
+		t.execReader.Close()
+		t.execReader = nil
+	}
+	t.mu.Unlock()
+
+	// Wait for reader goroutines to finish
+	t.wg.Wait()
+}
+
+// WatchExec attaches a tracepoint on sched_process_exec and calls the
+// callback with the PID of each newly exec'd process. This lets the
+// pipeline discover Go TLS binaries the instant they start.
+func (t *BPFTracer) WatchExec(callback func(pid uint32)) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.collection == nil {
+		return errors.New("tracer not loaded")
+	}
+
+	prog, ok := t.collection.Programs["tracepoint_exec"]
+	if !ok {
+		return errors.New("tracepoint_exec program not found")
+	}
+
+	execMap, ok := t.collection.Maps["exec_events"]
+	if !ok {
+		return errors.New("exec_events map not found")
+	}
+
+	tp, err := link.Tracepoint("sched", "sched_process_exec", prog, nil)
+	if err != nil {
+		return fmt.Errorf("failed to attach exec tracepoint: %w", err)
+	}
+	t.links = append(t.links, tp)
+
+	reader, err := perf.NewReader(execMap, os.Getpagesize()*4)
+	if err != nil {
+		return fmt.Errorf("failed to create exec perf reader: %w", err)
+	}
+	t.execReader = reader
+
+	t.wg.Add(1)
+	go t.readExecEvents(reader, callback)
+
+	return nil
+}
+
+// readExecEvents reads exec notifications from the perf buffer.
+func (t *BPFTracer) readExecEvents(reader *perf.Reader, callback func(pid uint32)) {
+	defer t.wg.Done()
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		default:
+		}
+
+		record, err := reader.Read()
+		if err != nil {
+			if errors.Is(err, perf.ErrClosed) {
+				return
+			}
+			continue
+		}
+
+		if len(record.RawSample) < 4 {
+			continue
+		}
+
+		pid := binary.LittleEndian.Uint32(record.RawSample[:4])
+		callback(pid)
 	}
 }
 
