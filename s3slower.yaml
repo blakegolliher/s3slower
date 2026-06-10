@@ -1,5 +1,8 @@
 # S3Slower Configuration File
 # Documentation: https://github.com/s3slower/s3slower
+#
+# Hot-reload: min_latency_ms and debug take effect immediately when this
+# file is saved. All other settings require a service restart.
 
 # Minimum latency threshold in milliseconds
 # Only capture operations slower than this threshold (0 = capture all)

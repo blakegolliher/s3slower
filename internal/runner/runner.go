@@ -93,6 +93,10 @@ type Runner struct {
 	// targetLabels maps PIDs to their target's Prometheus labels
 	targetLabels map[uint32]map[string]string
 
+	// lastAppCfg is the most recently applied app config, kept so reloads
+	// can warn about changes to settings that only take effect at startup.
+	lastAppCfg *config.AppConfig
+
 	// extraLabelKeys is the union of all per-target prom_labels keys.
 	// It mirrors the label set registered with the Prometheus vectors, so
 	// handleEvent can pre-fill every key (with "" when absent) and avoid a
@@ -166,6 +170,7 @@ func New(cfg Config) (*Runner, error) {
 			// Set up callbacks
 			cw.OnAppConfigChange(r.handleAppConfigChange)
 			cw.OnTargetsChange(r.handleTargetsChange)
+			r.lastAppCfg = cw.AppConfig()
 
 			// Load initial targets
 			if targets := cw.Targets(); targets != nil {
@@ -247,6 +252,9 @@ func (r *Runner) onProcessDetach(pid int) {
 }
 
 // handleAppConfigChange is called when the app config file changes.
+// Only min_latency_ms and debug take effect at runtime; everything else
+// (prometheus, file, screen, pid) is wired up once at startup, so changes
+// there get an explicit "restart required" warning instead of silence.
 func (r *Runner) handleAppConfigChange(cfg *config.AppConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -262,6 +270,26 @@ func (r *Runner) handleAppConfigChange(cfg *config.AppConfig) {
 		r.config.Debug = cfg.Debug
 		fmt.Fprintf(os.Stderr, "Debug mode: %v\n", cfg.Debug)
 	}
+
+	// Warn about changes that cannot be hot-reloaded.
+	if prev := r.lastAppCfg; prev != nil {
+		warnStatic := func(section string) {
+			fmt.Fprintf(os.Stderr, "warning: %s settings changed in config file; restart s3slower to apply\n", section)
+		}
+		if prev.Prometheus != cfg.Prometheus {
+			warnStatic("prometheus")
+		}
+		if prev.File != cfg.File {
+			warnStatic("file")
+		}
+		if prev.Screen != cfg.Screen {
+			warnStatic("screen")
+		}
+		if prev.PID != cfg.PID {
+			warnStatic("pid")
+		}
+	}
+	r.lastAppCfg = cfg
 }
 
 // handleTargetsChange is called when the targets config file changes.

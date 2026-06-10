@@ -65,7 +65,10 @@ sudo journalctl -u s3slower -f
 curl -s http://localhost:9000/metrics | grep s3slower
 ```
 
-Edit `/etc/s3slower/s3slower.yaml` to configure (changes are hot-reloaded):
+Edit `/etc/s3slower/s3slower.yaml` to configure. `min_latency_ms` and
+`debug` are hot-reloaded; other settings (prometheus, file, screen)
+require a service restart, and s3slower logs a warning if they change
+while it is running:
 
 ```yaml
 min_latency_ms: 0
