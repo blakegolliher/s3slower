@@ -181,7 +181,7 @@ func (m *MockTracer) SetMinLatency(latencyUs uint64) {
 	m.minLatency = latencyUs
 }
 
-// IsLoaded returns whether the tracer is loaded.
+// IsLoaded returns whether the tracer is loaded. Test-only inspection hook.
 func (m *MockTracer) IsLoaded() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -189,7 +189,7 @@ func (m *MockTracer) IsLoaded() bool {
 	return m.loaded
 }
 
-// TargetPID returns the target PID.
+// TargetPID returns the target PID. Test-only inspection hook.
 func (m *MockTracer) TargetPID() uint32 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -197,7 +197,7 @@ func (m *MockTracer) TargetPID() uint32 {
 	return m.targetPID
 }
 
-// MinLatency returns the minimum latency.
+// MinLatency returns the minimum latency. Test-only inspection hook.
 func (m *MockTracer) MinLatency() uint64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -205,7 +205,7 @@ func (m *MockTracer) MinLatency() uint64 {
 	return m.minLatency
 }
 
-// AttachedProbes returns the list of attached probes.
+// AttachedProbes returns the list of attached probes. Test-only inspection hook.
 func (m *MockTracer) AttachedProbes() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -246,7 +246,7 @@ func (m *MockTracer) InjectEvent(event *RawEvent) {
 	callback(event)
 }
 
-// SetLoadError sets an error to return from Load.
+// SetLoadError sets an error to return from Load. Test-only fault injection.
 func (m *MockTracer) SetLoadError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -254,7 +254,7 @@ func (m *MockTracer) SetLoadError(err error) {
 	m.loadErr = err
 }
 
-// SetUprobeError sets an error to return from AttachUprobes.
+// SetUprobeError sets an error to return from AttachUprobes. Test-only fault injection.
 func (m *MockTracer) SetUprobeError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

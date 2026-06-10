@@ -148,7 +148,7 @@ func New(cfg Config) (*Runner, error) {
 		l, err := logger.NewRotatingLogger(logCfg)
 		if err != nil {
 			// Non-fatal: warn and continue without logging
-			fmt.Fprintf(os.Stderr, "Warning: failed to create logger: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: failed to create logger: %v\n", err)
 		} else {
 			r.logger = l
 		}
@@ -159,7 +159,7 @@ func New(cfg Config) (*Runner, error) {
 		cw, err := config.NewConfigWatcher(cfg.ConfigPath, cfg.TargetsPath)
 		if err != nil {
 			// Non-fatal: warn and continue without hot-reload
-			fmt.Fprintf(os.Stderr, "Warning: failed to create config watcher: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: failed to create config watcher: %v\n", err)
 		} else {
 			r.configWatcher = cw
 
@@ -318,7 +318,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Start target watcher for process detection
 	if r.targetWatcher != nil {
 		if err := r.targetWatcher.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to start target watcher: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: failed to start target watcher: %v\n", err)
 		} else {
 			defer r.targetWatcher.Stop()
 			fmt.Fprintf(os.Stderr, "Watching for %d target processes\n", len(r.targets))

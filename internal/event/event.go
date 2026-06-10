@@ -34,7 +34,6 @@ type S3Event struct {
 
 	// Status
 	StatusCode int
-	IsPartial  bool
 	IsError    bool
 
 	// File descriptor for correlation

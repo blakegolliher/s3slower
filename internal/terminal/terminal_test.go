@@ -137,30 +137,6 @@ func TestWriteEvent(t *testing.T) {
 	})
 }
 
-// TestTruncate tests the truncate function.
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		input    string
-		maxLen   int
-		expected string
-	}{
-		{input: "short", maxLen: 10, expected: "short"},
-		{input: "exactly10!", maxLen: 10, expected: "exactly10!"},
-		{input: "this is a long string", maxLen: 10, expected: "this is..."},
-		{input: "abc", maxLen: 2, expected: "ab"},
-		{input: "abc", maxLen: 3, expected: "abc"},
-		{input: "", maxLen: 10, expected: ""},
-		{input: "test", maxLen: 0, expected: ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := truncate(tt.input, tt.maxLen)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
 // TestOutputModes tests the output mode constants.
 func TestOutputModes(t *testing.T) {
 	assert.Equal(t, OutputMode(0), OutputModeTable)

@@ -270,27 +270,44 @@ func analyzeGoTLSBinary(path string) (*goTLSAnalysis, error) {
 // symbols (crypto/tls.(*Conn).Write and Read), indicating a Go program
 // that uses the built-in TLS package.
 func hasGoTLSSymbols(path string) bool {
+	return hasDefinedSymbols(path, false, "crypto/tls.(*Conn).Write", "crypto/tls.(*Conn).Read")
+}
+
+// hasDefinedSymbols reports whether the ELF file at path defines (Value != 0)
+// all of the named symbols. When includeDynamic is set, the dynamic symbol
+// table is consulted first (shared libraries export there), falling back to
+// the regular symbol table either way.
+func hasDefinedSymbols(path string, includeDynamic bool, names ...string) bool {
 	f, err := elf.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
 
+	if includeDynamic {
+		if syms, err := f.DynamicSymbols(); err == nil && allDefined(syms, names) {
+			return true
+		}
+	}
 	syms, err := f.Symbols()
 	if err != nil {
 		return false
 	}
+	return allDefined(syms, names)
+}
 
-	var hasWrite, hasRead bool
+// allDefined reports whether every name appears in syms with a nonzero value.
+func allDefined(syms []elf.Symbol, names []string) bool {
+	remaining := make(map[string]bool, len(names))
+	for _, n := range names {
+		remaining[n] = true
+	}
 	for _, s := range syms {
-		if s.Name == "crypto/tls.(*Conn).Write" && s.Value != 0 {
-			hasWrite = true
-		}
-		if s.Name == "crypto/tls.(*Conn).Read" && s.Value != 0 {
-			hasRead = true
-		}
-		if hasWrite && hasRead {
-			return true
+		if s.Value != 0 && remaining[s.Name] {
+			delete(remaining, s.Name)
+			if len(remaining) == 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -395,76 +412,14 @@ func findExecutable(name string) string {
 // SSL_read as defined (non-UND) symbols, indicating a statically-linked
 // OpenSSL. We only need the symbol table, not debug info.
 func hasStaticSSLSymbols(path string) bool {
-	f, err := elf.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	syms, err := f.Symbols()
-	if err != nil {
-		return false
-	}
-
-	var hasWrite, hasRead bool
-	for _, s := range syms {
-		if s.Name == "SSL_write" && s.Value != 0 {
-			hasWrite = true
-		}
-		if s.Name == "SSL_read" && s.Value != 0 {
-			hasRead = true
-		}
-		if hasWrite && hasRead {
-			return true
-		}
-	}
-	return false
+	return hasDefinedSymbols(path, false, "SSL_write", "SSL_read")
 }
 
 // hasS2NSymbols checks whether an ELF binary contains s2n_send and s2n_recv
-// as defined symbols, indicating embedded s2n-tls (e.g. AWS CRT).
+// as defined symbols, indicating embedded s2n-tls (e.g. AWS CRT). The dynamic
+// symbol table is checked first since shared libraries export there.
 func hasS2NSymbols(path string) bool {
-	f, err := elf.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	// Check dynamic symbols first (shared libraries)
-	dynsyms, err := f.DynamicSymbols()
-	if err == nil {
-		var hasSend, hasRecv bool
-		for _, s := range dynsyms {
-			if s.Name == "s2n_send" && s.Value != 0 {
-				hasSend = true
-			}
-			if s.Name == "s2n_recv" && s.Value != 0 {
-				hasRecv = true
-			}
-			if hasSend && hasRecv {
-				return true
-			}
-		}
-	}
-
-	// Fall back to regular symbol table
-	syms, err := f.Symbols()
-	if err != nil {
-		return false
-	}
-	var hasSend, hasRecv bool
-	for _, s := range syms {
-		if s.Name == "s2n_send" && s.Value != 0 {
-			hasSend = true
-		}
-		if s.Name == "s2n_recv" && s.Value != 0 {
-			hasRecv = true
-		}
-		if hasSend && hasRecv {
-			return true
-		}
-	}
-	return false
+	return hasDefinedSymbols(path, true, "s2n_send", "s2n_recv")
 }
 
 // findLibrary finds a TLS library by mode.
