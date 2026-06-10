@@ -185,7 +185,6 @@ func New(cfg Config) (*Runner, error) {
 				ID:         "watch-" + proc,
 				MatchType:  config.MatchTypeComm,
 				MatchValue: proc,
-				Mode:       config.ProbeModeAuto,
 			})
 		}
 	}
@@ -219,8 +218,8 @@ func New(cfg Config) (*Runner, error) {
 // Probes are attached globally (not per-process). The watcher provides process
 // identification for Prometheus label enrichment and PID-based filtering.
 func (r *Runner) onProcessAttach(pid int, comm string, target *config.TargetConfig) {
-	r.debugf("Matched process: pid=%d comm=%s target=%s mode=%s",
-		pid, comm, target.ID, target.Mode)
+	r.debugf("Matched process: pid=%d comm=%s target=%s",
+		pid, comm, target.ID)
 
 	fmt.Fprintf(os.Stderr, "Detected S3 client: %s (PID %d, target: %s)\n",
 		comm, pid, target.ID)
@@ -276,8 +275,8 @@ func (r *Runner) handleTargetsChange(targets []config.TargetConfig) {
 
 	// Print target IDs for visibility
 	for _, t := range targets {
-		fmt.Fprintf(os.Stderr, "  - %s (match: %s=%s, mode: %s)\n",
-			t.ID, t.MatchType, t.MatchValue, t.Mode)
+		fmt.Fprintf(os.Stderr, "  - %s (match: %s=%s)\n",
+			t.ID, t.MatchType, t.MatchValue)
 	}
 
 	// Update the target watcher with new targets

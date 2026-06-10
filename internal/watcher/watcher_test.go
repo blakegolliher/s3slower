@@ -54,19 +54,16 @@ func TestClassifyPID(t *testing.T) {
 			ID:         "aws-cli",
 			MatchType:  config.MatchTypeComm,
 			MatchValue: "aws",
-			Mode:       config.ProbeModeOpenSSL,
 		},
 		{
 			ID:         "boto3",
 			MatchType:  config.MatchTypeCmdlineSubstring,
 			MatchValue: "boto3",
-			Mode:       config.ProbeModeOpenSSL,
 		},
 		{
 			ID:         "curl",
 			MatchType:  config.MatchTypeExeBasename,
 			MatchValue: "curl",
-			Mode:       config.ProbeModeHTTP,
 		},
 	}
 
@@ -75,7 +72,6 @@ func TestClassifyPID(t *testing.T) {
 
 		require.NotNil(t, result)
 		assert.Equal(t, "aws-cli", result.ID)
-		assert.Equal(t, config.ProbeModeOpenSSL, result.Mode)
 	})
 
 	t.Run("match_comm_exact_only", func(t *testing.T) {
@@ -96,8 +92,8 @@ func TestClassifyPID(t *testing.T) {
 
 	t.Run("first_match_wins", func(t *testing.T) {
 		targets := []config.TargetConfig{
-			{ID: "first", MatchType: config.MatchTypeComm, MatchValue: "test", Mode: config.ProbeModeOpenSSL},
-			{ID: "second", MatchType: config.MatchTypeComm, MatchValue: "test", Mode: config.ProbeModeHTTP},
+			{ID: "first", MatchType: config.MatchTypeComm, MatchValue: "test"},
+			{ID: "second", MatchType: config.MatchTypeComm, MatchValue: "test"},
 		}
 
 		result := ClassifyPID(12345, "test", targets)
@@ -107,7 +103,7 @@ func TestClassifyPID(t *testing.T) {
 
 	t.Run("exe_basename_also_matches_comm", func(t *testing.T) {
 		targets := []config.TargetConfig{
-			{ID: "curl", MatchType: config.MatchTypeExeBasename, MatchValue: "curl", Mode: config.ProbeModeHTTP},
+			{ID: "curl", MatchType: config.MatchTypeExeBasename, MatchValue: "curl"},
 		}
 
 		// When exe doesn't match but comm does (for exe_basename type)
@@ -124,7 +120,6 @@ func TestTargetWatcher(t *testing.T) {
 			ID:         "test-target",
 			MatchType:  config.MatchTypeComm,
 			MatchValue: "testproc",
-			Mode:       config.ProbeModeOpenSSL,
 		},
 	}
 

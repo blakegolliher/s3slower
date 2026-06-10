@@ -30,23 +30,14 @@ func ValidateMatchType(mt string) bool {
 	return ValidMatchTypes[MatchType(mt)]
 }
 
-// ProbeMode represents the TLS library probe mode.
-type ProbeMode string
-
-const (
-	ProbeModeAuto    ProbeMode = "auto"
-	ProbeModeOpenSSL ProbeMode = "openssl"
-	ProbeModeGnuTLS  ProbeMode = "gnutls"
-	ProbeModeNSS     ProbeMode = "nss"
-	ProbeModeHTTP    ProbeMode = "http"
-)
-
-// TargetConfig represents a single target configuration.
+// TargetConfig represents a single target configuration. Probes attach
+// globally (not per-target); targets exist to identify processes and enrich
+// their Prometheus metrics with prom_labels. A legacy per-target `mode` key
+// is silently ignored.
 type TargetConfig struct {
 	ID         string            `yaml:"id"`
 	MatchType  MatchType         `yaml:"-"`
 	MatchValue string            `yaml:"-"`
-	Mode       ProbeMode         `yaml:"mode"`
 	PromLabels map[string]string `yaml:"prom_labels,omitempty"`
 }
 
@@ -57,7 +48,6 @@ type targetConfigYAML struct {
 		Type  string `yaml:"type"`
 		Value string `yaml:"value"`
 	} `yaml:"match"`
-	Mode       string            `yaml:"mode"`
 	PromLabels map[string]string `yaml:"prom_labels,omitempty"`
 }
 
@@ -117,10 +107,6 @@ func LoadTargets(path string) ([]TargetConfig, error) {
 			return nil, fmt.Errorf("target %s: invalid match type '%s'", t.ID, t.Match.Type)
 		}
 
-		if t.Mode == "" {
-			return nil, fmt.Errorf("target %s: missing 'mode'", t.ID)
-		}
-
 		// Convert label values to strings
 		promLabels := make(map[string]string)
 		for k, v := range t.PromLabels {
@@ -131,7 +117,6 @@ func LoadTargets(path string) ([]TargetConfig, error) {
 			ID:         t.ID,
 			MatchType:  MatchType(t.Match.Type),
 			MatchValue: t.Match.Value,
-			Mode:       ProbeMode(t.Mode),
 			PromLabels: promLabels,
 		})
 	}

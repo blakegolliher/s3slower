@@ -47,13 +47,11 @@ func TestTargetConfig(t *testing.T) {
 			ID:         "test-target",
 			MatchType:  MatchTypeComm,
 			MatchValue: "python3",
-			Mode:       ProbeModeOpenSSL,
 		}
 
 		assert.Equal(t, "test-target", config.ID)
 		assert.Equal(t, MatchTypeComm, config.MatchType)
 		assert.Equal(t, "python3", config.MatchValue)
-		assert.Equal(t, ProbeModeOpenSSL, config.Mode)
 		assert.Empty(t, config.PromLabels)
 	})
 
@@ -62,7 +60,6 @@ func TestTargetConfig(t *testing.T) {
 			ID:         "boto3",
 			MatchType:  MatchTypeCmdlineSubstring,
 			MatchValue: "boto3",
-			Mode:       ProbeModeOpenSSL,
 			PromLabels: map[string]string{"client": "boto3", "env": "production"},
 		}
 
@@ -74,7 +71,6 @@ func TestTargetConfig(t *testing.T) {
 			ID:         "test",
 			MatchType:  MatchTypeComm,
 			MatchValue: "test",
-			Mode:       ProbeModeHTTP,
 		}
 
 		assert.Empty(t, config.PromLabels)
@@ -123,7 +119,6 @@ targets:
 		assert.Equal(t, "aws-cli", targets[0].ID)
 		assert.Equal(t, MatchTypeComm, targets[0].MatchType)
 		assert.Equal(t, "aws", targets[0].MatchValue)
-		assert.Equal(t, ProbeModeOpenSSL, targets[0].Mode)
 		assert.Equal(t, map[string]string{"client": "aws-cli", "env": "test"}, targets[0].PromLabels)
 
 		// Check second target (boto3)
@@ -135,7 +130,6 @@ targets:
 		assert.Equal(t, "curl", targets[2].ID)
 		assert.Equal(t, MatchTypeExeBasename, targets[2].MatchType)
 		assert.Equal(t, "curl", targets[2].MatchValue)
-		assert.Equal(t, ProbeModeHTTP, targets[2].Mode)
 	})
 
 	t.Run("file_not_found", func(t *testing.T) {
@@ -211,24 +205,6 @@ targets:
 		assert.Contains(t, err.Error(), "missing 'match.type' or 'match.value'")
 	})
 
-	t.Run("missing_mode", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "missing_mode.yml")
-
-		content := `
-targets:
-  - id: test
-    match:
-      type: comm
-      value: test
-`
-		require.NoError(t, os.WriteFile(configPath, []byte(content), 0644))
-
-		_, err := LoadTargets(configPath)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "missing 'mode'")
-	})
-
 	t.Run("invalid_match_type", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "invalid_match_type.yml")
@@ -297,8 +273,8 @@ func TestCollectExtraLabelKeys(t *testing.T) {
 
 	t.Run("no_labels", func(t *testing.T) {
 		targets := []TargetConfig{
-			{ID: "t1", MatchType: MatchTypeComm, MatchValue: "a", Mode: ProbeModeOpenSSL},
-			{ID: "t2", MatchType: MatchTypeComm, MatchValue: "b", Mode: ProbeModeHTTP},
+			{ID: "t1", MatchType: MatchTypeComm, MatchValue: "a"},
+			{ID: "t2", MatchType: MatchTypeComm, MatchValue: "b"},
 		}
 
 		result := CollectExtraLabelKeys(targets)
@@ -311,7 +287,6 @@ func TestCollectExtraLabelKeys(t *testing.T) {
 				ID:         "t1",
 				MatchType:  MatchTypeComm,
 				MatchValue: "a",
-				Mode:       ProbeModeOpenSSL,
 				PromLabels: map[string]string{"client": "boto3"},
 			},
 		}
@@ -326,14 +301,12 @@ func TestCollectExtraLabelKeys(t *testing.T) {
 				ID:         "t1",
 				MatchType:  MatchTypeComm,
 				MatchValue: "a",
-				Mode:       ProbeModeOpenSSL,
 				PromLabels: map[string]string{"client": "boto3", "env": "prod"},
 			},
 			{
 				ID:         "t2",
 				MatchType:  MatchTypeComm,
 				MatchValue: "b",
-				Mode:       ProbeModeOpenSSL,
 				PromLabels: map[string]string{"client": "aws-cli", "region": "us-west-2"},
 			},
 		}
@@ -349,7 +322,6 @@ func TestCollectExtraLabelKeys(t *testing.T) {
 				ID:         "t1",
 				MatchType:  MatchTypeComm,
 				MatchValue: "a",
-				Mode:       ProbeModeOpenSSL,
 				PromLabels: map[string]string{"zebra": "z", "apple": "a", "mango": "m"},
 			},
 		}
