@@ -17,6 +17,7 @@ go.work.sum
 
 # Coverage
 *.coverprofile
+*.coverage
 coverage.out
 coverage.html
 
