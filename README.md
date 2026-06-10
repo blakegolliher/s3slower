@@ -107,7 +107,7 @@ make monitoring-down  # Stop
 | `-p, --port` | Prometheus port | 9000 |
 | `--min-latency` | Min latency (ms) to report | 0 |
 | `--watch` | Process names to watch | - |
-| `--mode` | Probe mode: auto, http, openssl, gnutls, nss | auto |
+| `--mode` | Probe mode: auto, http, openssl, gnutls, nss, s2n, gotls | auto |
 | `--output` | Output format: table, simple, json | table |
 | `--log-dir` | Log directory | /var/log/s3slower |
 | `--no-log` | Disable file logging | false |

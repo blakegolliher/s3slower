@@ -25,7 +25,7 @@ import (
 // Config holds runner configuration.
 type Config struct {
 	// Probe settings
-	Mode         string // http, openssl, gnutls, nss, auto
+	Mode         string // auto, http, openssl, gnutls, nss, s2n, gotls
 	TargetPID    uint32
 	MinLatencyMs uint64
 	LibraryPath  string
@@ -325,22 +325,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Convert mode string to ProbeMode
-	mode := ebpf.ProbeModeAuto
-	switch r.config.Mode {
-	case "http":
-		mode = ebpf.ProbeModeHTTP
-	case "openssl":
-		mode = ebpf.ProbeModeOpenSSL
-	case "gnutls":
-		mode = ebpf.ProbeModeGnuTLS
-	case "nss":
-		mode = ebpf.ProbeModeNSS
-	case "s2n":
-		mode = ebpf.ProbeModeS2N
-	case "gotls":
-		mode = ebpf.ProbeModeGoTLS
-	case "auto":
-		mode = ebpf.ProbeModeAuto
+	mode, known := ebpf.ParseProbeMode(r.config.Mode)
+	if !known && r.config.Mode != "" {
+		fmt.Fprintf(os.Stderr, "warning: unknown probe mode %q, using auto\n", r.config.Mode)
 	}
 
 	// Create pipeline configuration

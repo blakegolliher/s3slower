@@ -35,6 +35,17 @@ const (
 	ProbeModeAuto ProbeMode = "auto"
 )
 
+// ParseProbeMode converts a mode string (e.g. the --mode flag) to a
+// ProbeMode. Unknown values return ProbeModeAuto and false.
+func ParseProbeMode(s string) (ProbeMode, bool) {
+	switch m := ProbeMode(s); m {
+	case ProbeModeHTTP, ProbeModeOpenSSL, ProbeModeGnuTLS, ProbeModeNSS,
+		ProbeModeS2N, ProbeModeGoTLS, ProbeModeAuto:
+		return m, true
+	}
+	return ProbeModeAuto, false
+}
+
 // RawEvent represents a raw event from the BPF perf buffer.
 type RawEvent struct {
 	TimestampUs     uint64

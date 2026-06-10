@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/s3slower/s3slower/internal/config"
+	"github.com/s3slower/s3slower/internal/ebpf"
 	"github.com/s3slower/s3slower/internal/runner"
 )
 
@@ -146,6 +147,9 @@ to enable metrics collection.`,
 				cfg.OutputFormat = outputFormat
 			}
 			if cmd.Flags().Changed("mode") {
+				if _, ok := ebpf.ParseProbeMode(mode); !ok {
+					return fmt.Errorf("invalid --mode %q (valid: auto, http, openssl, gnutls, nss, s2n, gotls)", mode)
+				}
 				cfg.Mode = mode
 			}
 			if cmd.Flags().Changed("library") {
@@ -239,6 +243,9 @@ The tracer will automatically detect the TLS library used.`,
 			}
 
 			cfg := runner.DefaultConfig()
+			if _, ok := ebpf.ParseProbeMode(mode); !ok {
+				return fmt.Errorf("invalid --mode %q (valid: auto, http, openssl, gnutls, nss, s2n, gotls)", mode)
+			}
 			cfg.Mode = mode
 			cfg.TargetPID = uint32(pid)
 			cfg.MinLatencyMs = minLatency
