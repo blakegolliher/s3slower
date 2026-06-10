@@ -269,4 +269,3 @@ The tracer will automatically detect the TLS library used.`,
 
 	return cmd
 }
-

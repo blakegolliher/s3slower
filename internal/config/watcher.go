@@ -16,9 +16,9 @@ type ConfigWatcher struct {
 	configPath  string
 	targetsPath string
 
-	mu         sync.RWMutex
-	appConfig  *AppConfig
-	targets    []TargetConfig
+	mu        sync.RWMutex
+	appConfig *AppConfig
+	targets   []TargetConfig
 
 	// Callback functions for when config changes
 	onAppConfigChange func(*AppConfig)

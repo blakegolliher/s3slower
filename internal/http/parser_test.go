@@ -10,130 +10,130 @@ import (
 // TestParseHTTPRequest tests the ParseHTTPRequest function.
 func TestParseHTTPRequest(t *testing.T) {
 	tests := []struct {
-		name          string
-		raw           []byte
-		wantMethod    string
-		wantHost      string
-		wantPath      string
+		name           string
+		raw            []byte
+		wantMethod     string
+		wantHost       string
+		wantPath       string
 		wantContentLen int
 	}{
 		// Valid requests
 		{
-			name:          "valid_get_request",
-			raw:           []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\nContent-Length: 0\r\n\r\n"),
-			wantMethod:    "GET",
-			wantHost:      "s3.amazonaws.com",
-			wantPath:      "/bucket/key",
+			name:           "valid_get_request",
+			raw:            []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\nContent-Length: 0\r\n\r\n"),
+			wantMethod:     "GET",
+			wantHost:       "s3.amazonaws.com",
+			wantPath:       "/bucket/key",
 			wantContentLen: 0,
 		},
 		{
-			name:          "valid_put_request_with_content_length",
-			raw:           []byte("PUT /mybucket/mykey.txt HTTP/1.1\r\nHost: minio.local:9000\r\nContent-Length: 1048576\r\n\r\n"),
-			wantMethod:    "PUT",
-			wantHost:      "minio.local:9000",
-			wantPath:      "/mybucket/mykey.txt",
+			name:           "valid_put_request_with_content_length",
+			raw:            []byte("PUT /mybucket/mykey.txt HTTP/1.1\r\nHost: minio.local:9000\r\nContent-Length: 1048576\r\n\r\n"),
+			wantMethod:     "PUT",
+			wantHost:       "minio.local:9000",
+			wantPath:       "/mybucket/mykey.txt",
 			wantContentLen: 1048576,
 		},
 		{
-			name:          "valid_post_request",
-			raw:           []byte("POST /bucket/key?uploads HTTP/1.1\r\nHost: s3.us-west-2.amazonaws.com\r\n\r\n"),
-			wantMethod:    "POST",
-			wantHost:      "s3.us-west-2.amazonaws.com",
-			wantPath:      "/bucket/key?uploads",
+			name:           "valid_post_request",
+			raw:            []byte("POST /bucket/key?uploads HTTP/1.1\r\nHost: s3.us-west-2.amazonaws.com\r\n\r\n"),
+			wantMethod:     "POST",
+			wantHost:       "s3.us-west-2.amazonaws.com",
+			wantPath:       "/bucket/key?uploads",
 			wantContentLen: 0,
 		},
 		{
-			name:          "valid_delete_request",
-			raw:           []byte("DELETE /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
-			wantMethod:    "DELETE",
-			wantHost:      "s3.amazonaws.com",
-			wantPath:      "/bucket/key",
+			name:           "valid_delete_request",
+			raw:            []byte("DELETE /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
+			wantMethod:     "DELETE",
+			wantHost:       "s3.amazonaws.com",
+			wantPath:       "/bucket/key",
 			wantContentLen: 0,
 		},
 		{
-			name:          "valid_head_request",
-			raw:           []byte("HEAD /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
-			wantMethod:    "HEAD",
-			wantHost:      "s3.amazonaws.com",
-			wantPath:      "/bucket/key",
+			name:           "valid_head_request",
+			raw:            []byte("HEAD /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
+			wantMethod:     "HEAD",
+			wantHost:       "s3.amazonaws.com",
+			wantPath:       "/bucket/key",
 			wantContentLen: 0,
 		},
 
 		// Missing headers
 		{
-			name:          "missing_host_header",
-			raw:           []byte("GET /bucket/key HTTP/1.1\r\nContent-Length: 100\r\n\r\n"),
-			wantMethod:    "GET",
-			wantHost:      "",
-			wantPath:      "/bucket/key",
+			name:           "missing_host_header",
+			raw:            []byte("GET /bucket/key HTTP/1.1\r\nContent-Length: 100\r\n\r\n"),
+			wantMethod:     "GET",
+			wantHost:       "",
+			wantPath:       "/bucket/key",
 			wantContentLen: 100,
 		},
 		{
-			name:          "missing_content_length",
-			raw:           []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
-			wantMethod:    "GET",
-			wantHost:      "s3.amazonaws.com",
-			wantPath:      "/bucket/key",
+			name:           "missing_content_length",
+			raw:            []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
+			wantMethod:     "GET",
+			wantHost:       "s3.amazonaws.com",
+			wantPath:       "/bucket/key",
 			wantContentLen: 0,
 		},
 
 		// Case insensitivity
 		{
-			name:          "case_insensitive_headers",
-			raw:           []byte("GET /bucket/key HTTP/1.1\r\nhOsT: s3.amazonaws.com\r\ncontent-LENGTH: 512\r\n\r\n"),
-			wantMethod:    "GET",
-			wantHost:      "s3.amazonaws.com",
-			wantPath:      "/bucket/key",
+			name:           "case_insensitive_headers",
+			raw:            []byte("GET /bucket/key HTTP/1.1\r\nhOsT: s3.amazonaws.com\r\ncontent-LENGTH: 512\r\n\r\n"),
+			wantMethod:     "GET",
+			wantHost:       "s3.amazonaws.com",
+			wantPath:       "/bucket/key",
 			wantContentLen: 512,
 		},
 
 		// Edge cases
 		{
-			name:          "empty_input",
-			raw:           []byte(""),
-			wantMethod:    "",
-			wantHost:      "",
-			wantPath:      "",
+			name:           "empty_input",
+			raw:            []byte(""),
+			wantMethod:     "",
+			wantHost:       "",
+			wantPath:       "",
 			wantContentLen: 0,
 		},
 		{
-			name:          "malformed_request_line",
-			raw:           []byte("INVALID\r\nHost: s3.amazonaws.com\r\n\r\n"),
-			wantMethod:    "",
-			wantHost:      "",
-			wantPath:      "",
+			name:           "malformed_request_line",
+			raw:            []byte("INVALID\r\nHost: s3.amazonaws.com\r\n\r\n"),
+			wantMethod:     "",
+			wantHost:       "",
+			wantPath:       "",
 			wantContentLen: 0,
 		},
 		{
-			name:          "invalid_content_length",
-			raw:           []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\nContent-Length: abc\r\n\r\n"),
-			wantMethod:    "GET",
-			wantHost:      "s3.amazonaws.com",
-			wantPath:      "/bucket/key",
+			name:           "invalid_content_length",
+			raw:            []byte("GET /bucket/key HTTP/1.1\r\nHost: s3.amazonaws.com\r\nContent-Length: abc\r\n\r\n"),
+			wantMethod:     "GET",
+			wantHost:       "s3.amazonaws.com",
+			wantPath:       "/bucket/key",
 			wantContentLen: 0,
 		},
 		{
-			name:          "binary_garbage",
-			raw:           []byte{0x00, 0xff, 0xfe, 0x80, 0x90, 0xa0},
-			wantMethod:    "",
-			wantHost:      "",
-			wantPath:      "",
+			name:           "binary_garbage",
+			raw:            []byte{0x00, 0xff, 0xfe, 0x80, 0x90, 0xa0},
+			wantMethod:     "",
+			wantHost:       "",
+			wantPath:       "",
 			wantContentLen: 0,
 		},
 		{
-			name:          "partial_request",
-			raw:           []byte("GET /bucket"),
-			wantMethod:    "GET",
-			wantHost:      "",
-			wantPath:      "/bucket",
+			name:           "partial_request",
+			raw:            []byte("GET /bucket"),
+			wantMethod:     "GET",
+			wantHost:       "",
+			wantPath:       "/bucket",
 			wantContentLen: 0,
 		},
 		{
-			name:          "multiple_colons_in_header_value",
-			raw:           []byte("GET / HTTP/1.1\r\nHost: [::1]:9000\r\n\r\n"),
-			wantMethod:    "GET",
-			wantHost:      "[::1]:9000",
-			wantPath:      "/",
+			name:           "multiple_colons_in_header_value",
+			raw:            []byte("GET / HTTP/1.1\r\nHost: [::1]:9000\r\n\r\n"),
+			wantMethod:     "GET",
+			wantHost:       "[::1]:9000",
+			wantPath:       "/",
 			wantContentLen: 0,
 		},
 	}
@@ -161,9 +161,9 @@ func TestParseHTTPRequest_UTF8Path(t *testing.T) {
 // TestParseHTTPResponse tests the ParseHTTPResponse function.
 func TestParseHTTPResponse(t *testing.T) {
 	tests := []struct {
-		name             string
-		raw              []byte
-		wantStatus       int
+		name              string
+		raw               []byte
+		wantStatus        int
 		wantContentLength int
 	}{
 		// Valid responses

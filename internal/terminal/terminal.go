@@ -16,16 +16,16 @@ import (
 type OutputMode int
 
 const (
-	OutputModeTable  OutputMode = iota
+	OutputModeTable OutputMode = iota
 	OutputModeSimple
 	OutputModeJSON
 )
 
 // Writer handles terminal output.
 type Writer struct {
-	out        io.Writer
-	mode       OutputMode
-	maxURLLen  int
+	out           io.Writer
+	mode          OutputMode
+	maxURLLen     int
 	headerPrinted bool
 }
 
@@ -216,5 +216,3 @@ func abbreviateOp(op string) string {
 		return op
 	}
 }
-
-

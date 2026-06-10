@@ -37,18 +37,18 @@ const (
 
 // RawEvent represents a raw event from the BPF perf buffer.
 type RawEvent struct {
-	TimestampUs    uint64
-	LatencyUs      uint64
-	PID            uint32
-	TID            uint32
-	FD             uint32
-	Comm           [16]byte
-	ReqSize        uint32
-	RespSize       uint32
+	TimestampUs     uint64
+	LatencyUs       uint64
+	PID             uint32
+	TID             uint32
+	FD              uint32
+	Comm            [16]byte
+	ReqSize         uint32
+	RespSize        uint32
 	ActualRespBytes uint32
-	IsPartial      uint8
-	ClientType     uint8
-	_              [2]byte // padding
+	IsPartial       uint8
+	ClientType      uint8
+	_               [2]byte // padding
 	Data            [1024]byte
 	RespData        [768]byte
 }
@@ -83,11 +83,11 @@ type ProbeConfig struct {
 
 // ProbeStats holds statistics about probe operation.
 type ProbeStats struct {
-	EventsReceived   uint64
-	EventsDropped    uint64
-	AttachTime       time.Time
-	LastEventTime    time.Time
-	ActiveProbes     int
+	EventsReceived uint64
+	EventsDropped  uint64
+	AttachTime     time.Time
+	LastEventTime  time.Time
+	ActiveProbes   int
 }
 
 // Tracer manages eBPF program loading and event collection.

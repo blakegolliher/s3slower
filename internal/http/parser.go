@@ -210,20 +210,20 @@ func IsS3Method(method string) bool {
 type S3Operation string
 
 const (
-	OpGetObject      S3Operation = "GET_OBJECT"
-	OpPutObject      S3Operation = "PUT_OBJECT"
-	OpDeleteObject   S3Operation = "DELETE_OBJECT"
-	OpHeadObject     S3Operation = "HEAD_OBJECT"
-	OpListObjects    S3Operation = "LIST_OBJECTS"
-	OpListPrefix     S3Operation = "LIST_PREFIX"
-	OpMPUCreate      S3Operation = "MPU_CREATE"
-	OpMPUPart        S3Operation = "MPU_PART"
-	OpMPUComplete    S3Operation = "MPU_COMPLETE"
-	OpMPUAbort       S3Operation = "MPU_ABORT"
-	OpCreateBucket   S3Operation = "CREATE_BUCKET"
-	OpDeleteBucket   S3Operation = "DELETE_BUCKET"
-	OpHeadBucket     S3Operation = "HEAD_BUCKET"
-	OpUnknown        S3Operation = "UNKNOWN"
+	OpGetObject    S3Operation = "GET_OBJECT"
+	OpPutObject    S3Operation = "PUT_OBJECT"
+	OpDeleteObject S3Operation = "DELETE_OBJECT"
+	OpHeadObject   S3Operation = "HEAD_OBJECT"
+	OpListObjects  S3Operation = "LIST_OBJECTS"
+	OpListPrefix   S3Operation = "LIST_PREFIX"
+	OpMPUCreate    S3Operation = "MPU_CREATE"
+	OpMPUPart      S3Operation = "MPU_PART"
+	OpMPUComplete  S3Operation = "MPU_COMPLETE"
+	OpMPUAbort     S3Operation = "MPU_ABORT"
+	OpCreateBucket S3Operation = "CREATE_BUCKET"
+	OpDeleteBucket S3Operation = "DELETE_BUCKET"
+	OpHeadBucket   S3Operation = "HEAD_BUCKET"
+	OpUnknown      S3Operation = "UNKNOWN"
 )
 
 // isBucketOnlyPath returns true if the path contains only a bucket name

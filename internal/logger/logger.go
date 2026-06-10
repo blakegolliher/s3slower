@@ -19,8 +19,8 @@ type RotatingLogger struct {
 
 	dir         string
 	prefix      string
-	maxSize     int64  // max size in bytes
-	maxBackups  int    // number of old logs to keep
+	maxSize     int64 // max size in bytes
+	maxBackups  int   // number of old logs to keep
 	currentFile *os.File
 	currentSize int64
 }
@@ -235,4 +235,3 @@ func truncateLog(s string, maxLen int) string {
 	}
 	return s[:maxLen]
 }
-

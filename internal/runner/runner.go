@@ -31,16 +31,16 @@ type Config struct {
 	LibraryPath  string
 
 	// Output settings
-	EnableTerminal    bool
-	EnablePrometheus  bool
-	EnableLogging     bool
-	PrometheusPort    int
-	PrometheusHost    string
-	LogDir            string
-	LogPrefix         string // Log file basename prefix; empty defaults to "s3slower".
-	LogMaxSizeMB      int
-	LogMaxBackups     int
-	OutputFormat      string // "table", "simple", "json"
+	EnableTerminal   bool
+	EnablePrometheus bool
+	EnableLogging    bool
+	PrometheusPort   int
+	PrometheusHost   string
+	LogDir           string
+	LogPrefix        string // Log file basename prefix; empty defaults to "s3slower".
+	LogMaxSizeMB     int
+	LogMaxBackups    int
+	OutputFormat     string // "table", "simple", "json"
 
 	// Screen settings
 	TableFormat  bool
@@ -60,30 +60,30 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Mode:             "auto",
-		EnableTerminal:   true,
-		EnableLogging:    true,
-		LogDir:           "/var/log/s3slower",
-		LogMaxSizeMB:     100,
-		LogMaxBackups:    5,
-		PrometheusPort:   9000,
-		PrometheusHost:   "::",
-		OutputFormat:     "table",
-		TableFormat:      true,
-		MaxURLLength:     50,
+		Mode:           "auto",
+		EnableTerminal: true,
+		EnableLogging:  true,
+		LogDir:         "/var/log/s3slower",
+		LogMaxSizeMB:   100,
+		LogMaxBackups:  5,
+		PrometheusPort: 9000,
+		PrometheusHost: "::",
+		OutputFormat:   "table",
+		TableFormat:    true,
+		MaxURLLength:   50,
 	}
 }
 
 // Runner manages the s3slower execution.
 type Runner struct {
-	config          Config
-	pipeline        *ebpf.Pipeline
-	terminal        *terminal.Writer
-	logger          *logger.RotatingLogger
-	exporter        *metrics.Exporter
-	metrics         *metrics.Metrics
-	configWatcher   *config.ConfigWatcher
-	targetWatcher   *watcher.TargetWatcher
+	config        Config
+	pipeline      *ebpf.Pipeline
+	terminal      *terminal.Writer
+	logger        *logger.RotatingLogger
+	exporter      *metrics.Exporter
+	metrics       *metrics.Metrics
+	configWatcher *config.ConfigWatcher
+	targetWatcher *watcher.TargetWatcher
 
 	// Mutex for config updates
 	mu           sync.RWMutex
@@ -564,7 +564,7 @@ func collectLocalAddrs(hostname string) map[string]bool {
 	addrs := map[string]bool{
 		"127.0.0.1": true,
 		"::1":       true,
-		"localhost":  true,
+		"localhost": true,
 	}
 	if hostname != "" {
 		addrs[hostname] = true
@@ -634,4 +634,3 @@ func (r *Runner) Close() error {
 	}
 	return nil
 }
-

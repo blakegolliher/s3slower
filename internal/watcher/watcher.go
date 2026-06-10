@@ -265,4 +265,3 @@ func (w *TargetWatcher) SetDetachCallback(callback DetachCallback) {
 	defer w.mu.Unlock()
 	w.detachCallback = callback
 }
-

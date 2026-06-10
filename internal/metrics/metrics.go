@@ -13,11 +13,11 @@ import (
 
 // Metrics holds all Prometheus metrics for s3slower.
 type Metrics struct {
-	RequestsTotal      *prometheus.CounterVec
-	RequestErrorsTotal *prometheus.CounterVec
-	RequestDurationMs  *prometheus.HistogramVec
-	RequestBytesTotal  *prometheus.CounterVec
-	ResponseBytesTotal *prometheus.CounterVec
+	RequestsTotal       *prometheus.CounterVec
+	RequestErrorsTotal  *prometheus.CounterVec
+	RequestDurationMs   *prometheus.HistogramVec
+	RequestBytesTotal   *prometheus.CounterVec
+	ResponseBytesTotal  *prometheus.CounterVec
 	ResponseStatusTotal *prometheus.CounterVec
 }
 
@@ -170,4 +170,3 @@ func (e *Exporter) Stop() error {
 	}
 	return nil
 }
-

@@ -33,10 +33,10 @@ type BPFTracer struct {
 	reader     *perf.Reader
 	execReader *perf.Reader
 
-	links      []link.Link
-	callback   EventCallback
-	running    bool
-	stopCh     chan struct{}
+	links    []link.Link
+	callback EventCallback
+	running  bool
+	stopCh   chan struct{}
 
 	targetPID    uint32
 	minLatencyUs uint64

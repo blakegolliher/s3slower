@@ -10,23 +10,23 @@ import (
 // S3Event represents a captured S3 operation event.
 type S3Event struct {
 	// Timing
-	Timestamp   time.Time
-	LatencyUs   uint64
-	LatencyMs   float64
+	Timestamp time.Time
+	LatencyUs uint64
+	LatencyMs float64
 
 	// Process info
-	PID       uint32
-	TID       uint32
-	Comm      string
+	PID        uint32
+	TID        uint32
+	Comm       string
 	ClientType string
 
 	// Request details
-	Method      string
-	Host        string
-	Path        string
-	Operation   http.S3Operation
-	Bucket      string
-	Endpoint    string
+	Method    string
+	Host      string
+	Path      string
+	Operation http.S3Operation
+	Bucket    string
+	Endpoint  string
 
 	// Sizes
 	RequestSize  uint32

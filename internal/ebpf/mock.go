@@ -266,15 +266,15 @@ func (m *MockTracer) SetUprobeError(err error) {
 type MockLibraryFinder struct {
 	mu sync.RWMutex
 
-	opensslPath  string
-	opensslErr   error
-	gnutlsPath   string
-	gnutlsErr    error
-	nssPath      string
-	nssErr       error
-	s2nPath      string
-	s2nErr       error
-	goTLSPaths   []string
+	opensslPath string
+	opensslErr  error
+	gnutlsPath  string
+	gnutlsErr   error
+	nssPath     string
+	nssErr      error
+	s2nPath     string
+	s2nErr      error
+	goTLSPaths  []string
 }
 
 // NewMockLibraryFinder creates a new mock library finder.

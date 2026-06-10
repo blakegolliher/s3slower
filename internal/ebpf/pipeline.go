@@ -20,11 +20,11 @@ type Pipeline struct {
 	debug     bool
 
 	// Configuration
-	mode           ProbeMode
-	targetPID      uint32
-	minLatencyUs   uint64
-	libraryPath    string
-	libraryFinder  LibraryFinder
+	mode          ProbeMode
+	targetPID     uint32
+	minLatencyUs  uint64
+	libraryPath   string
+	libraryFinder LibraryFinder
 
 	// checkedGoTLS caches binary paths we've already inspected for
 	// Go crypto/tls symbols (true = has them, false = doesn't).
@@ -297,21 +297,21 @@ func (p *Pipeline) Stats() PipelineStats {
 	tracerStats := p.tracer.Stats()
 
 	return PipelineStats{
-		TracerStats:   tracerStats,
-		Mode:          p.mode,
-		TargetPID:     p.targetPID,
-		MinLatencyUs:  p.minLatencyUs,
-		Running:       p.running,
+		TracerStats:  tracerStats,
+		Mode:         p.mode,
+		TargetPID:    p.targetPID,
+		MinLatencyUs: p.minLatencyUs,
+		Running:      p.running,
 	}
 }
 
 // PipelineStats holds statistics about the pipeline.
 type PipelineStats struct {
-	TracerStats   ProbeStats
-	Mode          ProbeMode
-	TargetPID     uint32
-	MinLatencyUs  uint64
-	Running       bool
+	TracerStats  ProbeStats
+	Mode         ProbeMode
+	TargetPID    uint32
+	MinLatencyUs uint64
+	Running      bool
 }
 
 // SetTargetPID updates the target PID filter.

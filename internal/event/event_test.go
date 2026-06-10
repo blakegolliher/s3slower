@@ -173,9 +173,9 @@ func TestParseStatusCode(t *testing.T) {
 // TestSetLatency tests the SetLatency method.
 func TestSetLatency(t *testing.T) {
 	tests := []struct {
-		name       string
-		latencyUs  uint64
-		wantMs     float64
+		name      string
+		latencyUs uint64
+		wantMs    float64
 	}{
 		{name: "zero", latencyUs: 0, wantMs: 0},
 		{name: "1ms", latencyUs: 1000, wantMs: 1.0},
@@ -257,4 +257,3 @@ func BenchmarkParseFromRaw(b *testing.B) {
 		event.ParseFromRaw(data)
 	}
 }
-

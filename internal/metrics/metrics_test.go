@@ -42,8 +42,8 @@ func TestRegister(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
 
-			"bucket":       "test-bucket",
-			"endpoint":     "http://localhost:9000",
+			"bucket":   "test-bucket",
+			"endpoint": "http://localhost:9000",
 		}
 		m.RecordRequest(labels, 100.0, 1024, 2048, false, 200)
 
@@ -76,8 +76,8 @@ func TestRecordRequest(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
 
-			"bucket":       "test-bucket",
-			"endpoint":     "http://localhost:9000",
+			"bucket":   "test-bucket",
+			"endpoint": "http://localhost:9000",
 		}
 
 		m.RecordRequest(labels, 100.5, 1024, 2048, false, 200)
@@ -99,8 +99,8 @@ func TestRecordRequest(t *testing.T) {
 			"comm":         "aws",
 			"s3_operation": "GET_OBJECT",
 
-			"bucket":       "test-bucket",
-			"endpoint":     "http://localhost:9000",
+			"bucket":   "test-bucket",
+			"endpoint": "http://localhost:9000",
 		}
 
 		m.RecordRequest(labels, 500.0, 0, 0, true, 503)
@@ -151,4 +151,3 @@ func BenchmarkRecordRequest(b *testing.B) {
 		m.RecordRequest(labels, float64(i%1000), 1024, 2048, false, 200)
 	}
 }
-
