@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -67,14 +68,10 @@ func NewConfigWatcher(configPath, targetsPath string) (*ConfigWatcher, error) {
 		}
 		cw.targets = targets
 
-		// Watch the targets file's directory (may be same as config dir)
-		dir := filepath.Dir(targetsPath)
-		if err := watcher.Add(dir); err != nil {
-			// Ignore if already watching
-			if err.Error() != "can't watch non-existent file" {
-				// Try to add anyway, may already be watching
-			}
-		}
+		// Watch the targets file's directory. fsnotify silently deduplicates
+		// when this is the same directory the config file is in, so failures
+		// here are safe to ignore — the config-file watch already covers it.
+		_ = watcher.Add(filepath.Dir(targetsPath))
 	}
 
 	return cw, nil
@@ -154,8 +151,7 @@ func (cw *ConfigWatcher) watch() {
 			if !ok {
 				return
 			}
-			// Log error but continue watching
-			fmt.Printf("Config watcher error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Config watcher error: %v\n", err)
 		}
 	}
 }
@@ -168,7 +164,7 @@ func (cw *ConfigWatcher) reloadAppConfig() {
 
 	cfg, err := LoadAppConfig(cw.configPath)
 	if err != nil {
-		fmt.Printf("Failed to reload app config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to reload app config: %v\n", err)
 		return
 	}
 
@@ -177,7 +173,7 @@ func (cw *ConfigWatcher) reloadAppConfig() {
 	callback := cw.onAppConfigChange
 	cw.mu.Unlock()
 
-	fmt.Printf("Reloaded app config from %s\n", cw.configPath)
+	fmt.Fprintf(os.Stderr, "Reloaded app config from %s\n", cw.configPath)
 
 	if callback != nil {
 		callback(cfg)
@@ -192,7 +188,7 @@ func (cw *ConfigWatcher) reloadTargets() {
 
 	targets, err := LoadTargets(cw.targetsPath)
 	if err != nil {
-		fmt.Printf("Failed to reload targets config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to reload targets config: %v\n", err)
 		return
 	}
 
@@ -201,7 +197,7 @@ func (cw *ConfigWatcher) reloadTargets() {
 	callback := cw.onTargetsChange
 	cw.mu.Unlock()
 
-	fmt.Printf("Reloaded %d targets from %s\n", len(targets), cw.targetsPath)
+	fmt.Fprintf(os.Stderr, "Reloaded %d targets from %s\n", len(targets), cw.targetsPath)
 
 	if callback != nil {
 		callback(targets)

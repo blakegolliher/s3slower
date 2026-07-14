@@ -229,8 +229,8 @@ func newAttachCommand() *cobra.Command {
 This is useful for debugging or monitoring a single application.
 The tracer will automatically detect the TLS library used.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if pid == 0 {
-				return cmd.Help()
+			if pid <= 0 {
+				return fmt.Errorf("--pid is required and must be a positive process ID")
 			}
 
 			cfg := runner.DefaultConfig()

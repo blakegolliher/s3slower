@@ -108,7 +108,10 @@ type Runner struct {
 
 // New creates a new runner.
 func New(cfg Config) (*Runner, error) {
-	hn, _ := os.Hostname()
+	hn, err := os.Hostname()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to read hostname: %v\n", err)
+	}
 	r := &Runner{
 		config:       cfg,
 		minLatencyMs: cfg.MinLatencyMs,
@@ -197,7 +200,11 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.EnablePrometheus {
 		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
 		r.extraLabelKeys = config.CollectExtraLabelKeys(r.targets)
-		r.exporter = metrics.NewExporter(addr, r.extraLabelKeys)
+		exporter, err := metrics.NewExporter(addr, r.extraLabelKeys)
+		if err != nil {
+			return nil, fmt.Errorf("create Prometheus exporter: %w", err)
+		}
+		r.exporter = exporter
 		r.metrics = r.exporter.Metrics()
 	}
 
@@ -243,17 +250,18 @@ func (r *Runner) onProcessDetach(pid int) {
 }
 
 // handleAppConfigChange is called when the app config file changes.
+// Values are applied unconditionally so that reverting a setting to its
+// zero value (e.g. min_latency_ms: 0) actually clears the previous value.
 func (r *Runner) handleAppConfigChange(cfg *config.AppConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Update min latency (can be changed at runtime)
-	if cfg.MinLatencyMs > 0 {
-		r.minLatencyMs = uint64(cfg.MinLatencyMs)
+	newLatency := uint64(cfg.MinLatencyMs)
+	if newLatency != r.minLatencyMs {
+		r.minLatencyMs = newLatency
 		fmt.Fprintf(os.Stderr, "Updated min latency to %dms\n", cfg.MinLatencyMs)
 	}
 
-	// Debug mode change
 	if cfg.Debug != r.config.Debug {
 		r.config.Debug = cfg.Debug
 		fmt.Fprintf(os.Stderr, "Debug mode: %v\n", cfg.Debug)
@@ -505,13 +513,10 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 	}
 }
 
-// startPrometheusServer starts the Prometheus HTTP server.
+// startPrometheusServer starts the Prometheus HTTP server. It is invoked
+// from Run() only when the exporter is non-nil, so no nil guard is needed.
 func (r *Runner) startPrometheusServer() {
-	if r.exporter == nil {
-		return
-	}
-	addr := net.JoinHostPort(r.config.PrometheusHost, fmt.Sprintf("%d", r.config.PrometheusPort))
-	fmt.Fprintf(os.Stderr, "Starting Prometheus server on %s\n", addr)
+	fmt.Fprintf(os.Stderr, "Starting Prometheus server on %s\n", r.exporter.Addr())
 	if err := r.exporter.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Prometheus server error: %v\n", err)
 	}
@@ -611,6 +616,9 @@ func (r *Runner) Close() error {
 	}
 	if r.pipeline != nil {
 		r.pipeline.Stop()
+	}
+	if r.exporter != nil {
+		r.exporter.Stop()
 	}
 	if r.logger != nil {
 		r.logger.Sync()

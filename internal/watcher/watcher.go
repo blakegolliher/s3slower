@@ -2,6 +2,7 @@
 package watcher
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -240,7 +241,7 @@ func (w *TargetWatcher) CleanupExited() {
 	defer w.mu.Unlock()
 
 	for pid := range w.attached {
-		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); os.IsNotExist(err) {
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); errors.Is(err, os.ErrNotExist) {
 			delete(w.attached, pid)
 			if w.detachCallback != nil {
 				w.detachCallback(pid)

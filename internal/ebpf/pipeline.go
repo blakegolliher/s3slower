@@ -164,26 +164,24 @@ func (p *Pipeline) attachProbes() error {
 		return p.tracer.AttachUprobes(libPath, p.mode)
 
 	case ProbeModeAuto:
-		// Try to attach all available probes
-		// First attach kprobes for HTTP
+		// Attach syscall kprobes for plain HTTP first.
 		if err := p.tracer.AttachKprobes(); err != nil {
 			return fmt.Errorf("failed to attach kprobes: %w", err)
 		}
 
-		// Then try to attach uprobes for available TLS libraries
-		libs := p.libraryFinder.FindAll()
-		for mode, path := range libs {
+		// Attach uprobes to every TLS library we can find; a missing library
+		// is expected on many hosts and must not fail the entire attach.
+		for mode, path := range p.libraryFinder.FindAll() {
 			if err := p.tracer.AttachUprobes(path, mode); err != nil {
-				// Log but don't fail - some libraries may not be available
-				fmt.Printf("warning: failed to attach %s uprobes to %s: %v\n", mode, path, err)
+				fmt.Fprintf(os.Stderr, "warning: failed to attach %s uprobes to %s: %v\n", mode, path, err)
 			}
 		}
 
-		// Attach to statically-linked binaries that embed OpenSSL
+		// Attach to statically-linked binaries that embed OpenSSL.
 		for _, binPath := range p.libraryFinder.FindStaticBinaries() {
 			p.debugf("Found statically-linked SSL binary: %s", binPath)
 			if err := p.tracer.AttachUprobes(binPath, ProbeModeOpenSSL); err != nil {
-				fmt.Printf("warning: failed to attach uprobes to %s: %v\n", binPath, err)
+				fmt.Fprintf(os.Stderr, "warning: failed to attach uprobes to %s: %v\n", binPath, err)
 			}
 		}
 		return nil

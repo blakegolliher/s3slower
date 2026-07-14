@@ -394,19 +394,24 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 	return nil
 }
 
-// readEvents reads events from the perf buffer.
+// readEvents reads events from the perf buffer until the reader is closed.
+// reader.Read blocks; Close from Stop() is what unblocks it and returns
+// perf.ErrClosed, so we exit cleanly on shutdown. Any other error backs off
+// briefly to avoid busy-spinning if the ring becomes wedged.
 func (t *BPFTracer) readEvents() {
-	for {
-		select {
-		case <-t.stopCh:
-			return
-		default:
-		}
+	const readErrBackoff = 100 * time.Millisecond
 
+	for {
 		record, err := t.reader.Read()
 		if err != nil {
 			if errors.Is(err, perf.ErrClosed) {
 				return
+			}
+			fmt.Fprintf(os.Stderr, "perf read error: %v\n", err)
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(readErrBackoff):
 			}
 			continue
 		}
@@ -418,7 +423,6 @@ func (t *BPFTracer) readEvents() {
 			continue
 		}
 
-		// Parse the event
 		event, err := parseRawEvent(record.RawSample)
 		if err != nil {
 			continue
