@@ -370,6 +370,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 	r.pipeline = pipeline
+	if r.metrics != nil {
+		r.pipeline.SetDropCallback(r.metrics.RecordDrop)
+	}
 	r.debugf("Pipeline created with mode=%s targetPID=%d minLatencyMs=%d",
 		mode, r.config.TargetPID, r.config.MinLatencyMs)
 

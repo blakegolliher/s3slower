@@ -31,10 +31,11 @@ type BPFTracer struct {
 	collection *ebpf.Collection
 	reader     *perf.Reader
 
-	links      []link.Link
-	callback   EventCallback
-	running    bool
-	stopCh     chan struct{}
+	links    []link.Link
+	callback EventCallback
+	onDrop   func(reason string, count uint64)
+	running  bool
+	stopCh   chan struct{}
 
 	targetPID    uint32
 	minLatencyUs uint64
@@ -419,7 +420,11 @@ func (t *BPFTracer) readEvents() {
 		if record.LostSamples > 0 {
 			t.mu.Lock()
 			t.eventsDrop += record.LostSamples
+			cb := t.onDrop
 			t.mu.Unlock()
+			if cb != nil {
+				cb("perf_lost", record.LostSamples)
+			}
 			continue
 		}
 
@@ -502,6 +507,13 @@ func (t *BPFTracer) SetTargetPID(pid uint32) {
 			configMap.Update(key, value, ebpf.UpdateAny)
 		}
 	}
+}
+
+// SetDropCallback registers a callback invoked on every perf-ring loss.
+func (t *BPFTracer) SetDropCallback(cb func(reason string, count uint64)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onDrop = cb
 }
 
 // SetMinLatency sets the minimum latency filter.

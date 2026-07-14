@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -110,6 +111,31 @@ func TestRecordRequest(t *testing.T) {
 		assert.NotNil(t, counter)
 	})
 
+}
+
+// TestRecordDrop tests the RecordDrop function.
+func TestRecordDrop(t *testing.T) {
+	t.Run("records_drops_by_reason", func(t *testing.T) {
+		m := New(nil)
+
+		m.RecordDrop(DropReasonPerfLost, 3)
+		m.RecordDrop(DropReasonChannelFull, 7)
+
+		// A zero count must not touch the counter — verified by re-observing
+		// the same series and asserting no change.
+		m.RecordDrop(DropReasonPerfLost, 0)
+
+		perfLost := m.EventsDroppedTotal.WithLabelValues(DropReasonPerfLost)
+		channelFull := m.EventsDroppedTotal.WithLabelValues(DropReasonChannelFull)
+
+		perfLostMetric := &dto.Metric{}
+		require.NoError(t, perfLost.Write(perfLostMetric))
+		assert.Equal(t, float64(3), perfLostMetric.GetCounter().GetValue())
+
+		channelFullMetric := &dto.Metric{}
+		require.NoError(t, channelFull.Write(channelFullMetric))
+		assert.Equal(t, float64(7), channelFullMetric.GetCounter().GetValue())
+	})
 }
 
 // TestExporter tests the Exporter struct.

@@ -201,6 +201,7 @@ When running with `--prometheus`, the following metrics are exported on `/metric
 | `s3slower_request_bytes_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total request (upload) bytes |
 | `s3slower_response_bytes_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total response (download) bytes |
 | `s3slower_response_status_total` | Counter | `bucket`, `status_code` | Response count by bucket and HTTP status code |
+| `s3slower_events_dropped_total` | Counter | `reason` | Events dropped before reaching the exporter (`reason` is `perf_lost` for kernel-ring overflow or `channel_full` for userspace back-pressure) |
 
 Histogram buckets: 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms
 

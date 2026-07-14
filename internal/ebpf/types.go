@@ -92,6 +92,10 @@ type Tracer interface {
 
 	// SetMinLatency sets the minimum latency filter.
 	SetMinLatency(latencyUs uint64)
+
+	// SetDropCallback registers a callback invoked whenever the perf ring
+	// reports lost samples. Called from the perf-reader goroutine.
+	SetDropCallback(cb func(reason string, count uint64))
 }
 
 // LibraryFinder finds TLS library paths on the system.
