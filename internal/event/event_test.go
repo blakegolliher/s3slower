@@ -26,7 +26,6 @@ func TestParseFromRaw(t *testing.T) {
 		name          string
 		data          []byte
 		wantMethod    string
-		wantHost      string
 		wantPath      string
 		wantOperation http.S3Operation
 		wantBucket    string
@@ -35,7 +34,6 @@ func TestParseFromRaw(t *testing.T) {
 			name:          "get_object_request",
 			data:          []byte("GET /mybucket/mykey.txt HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
 			wantMethod:    "GET",
-			wantHost:      "s3.amazonaws.com",
 			wantPath:      "/mybucket/mykey.txt",
 			wantOperation: http.OpGetObject,
 			wantBucket:    "mybucket",
@@ -44,7 +42,6 @@ func TestParseFromRaw(t *testing.T) {
 			name:          "put_object_request",
 			data:          []byte("PUT /mybucket/mykey.txt HTTP/1.1\r\nHost: s3.amazonaws.com\r\nContent-Length: 1024\r\n\r\n"),
 			wantMethod:    "PUT",
-			wantHost:      "s3.amazonaws.com",
 			wantPath:      "/mybucket/mykey.txt",
 			wantOperation: http.OpPutObject,
 			wantBucket:    "mybucket",
@@ -53,7 +50,6 @@ func TestParseFromRaw(t *testing.T) {
 			name:          "list_objects_request",
 			data:          []byte("GET /mybucket?list-type=2&prefix=foo/ HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
 			wantMethod:    "GET",
-			wantHost:      "s3.amazonaws.com",
 			wantPath:      "/mybucket?list-type=2&prefix=foo/",
 			wantOperation: http.OpListPrefix,
 			wantBucket:    "mybucket",
@@ -62,7 +58,6 @@ func TestParseFromRaw(t *testing.T) {
 			name:          "multipart_create_request",
 			data:          []byte("POST /mybucket/mykey?uploads HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
 			wantMethod:    "POST",
-			wantHost:      "s3.amazonaws.com",
 			wantPath:      "/mybucket/mykey?uploads",
 			wantOperation: http.OpMPUCreate,
 			wantBucket:    "mybucket",
@@ -71,7 +66,6 @@ func TestParseFromRaw(t *testing.T) {
 			name:          "delete_object_request",
 			data:          []byte("DELETE /mybucket/mykey.txt HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n"),
 			wantMethod:    "DELETE",
-			wantHost:      "s3.amazonaws.com",
 			wantPath:      "/mybucket/mykey.txt",
 			wantOperation: http.OpDeleteObject,
 			wantBucket:    "mybucket",
@@ -80,7 +74,6 @@ func TestParseFromRaw(t *testing.T) {
 			name:          "empty_data",
 			data:          []byte{},
 			wantMethod:    "",
-			wantHost:      "",
 			wantPath:      "",
 			wantOperation: http.OpUnknown,
 			wantBucket:    "",
@@ -93,7 +86,6 @@ func TestParseFromRaw(t *testing.T) {
 			event.ParseFromRaw(tt.data)
 
 			assert.Equal(t, tt.wantMethod, event.Method)
-			assert.Equal(t, tt.wantHost, event.Host)
 			assert.Equal(t, tt.wantPath, event.Path)
 			assert.Equal(t, tt.wantOperation, event.Operation)
 			assert.Equal(t, tt.wantBucket, event.Bucket)

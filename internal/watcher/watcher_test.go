@@ -170,7 +170,7 @@ func TestTargetWatcher(t *testing.T) {
 		assert.Equal(t, "testproc", callbackComm)
 		assert.NotNil(t, callbackTarget)
 		assert.Equal(t, "test-target", callbackTarget.ID)
-		assert.True(t, watcher.IsAttached(12345))
+		assert.True(t, watcher.GetAttached()[12345])
 	})
 
 	t.Run("on_exec_non_matching_pid", func(t *testing.T) {
@@ -183,7 +183,7 @@ func TestTargetWatcher(t *testing.T) {
 		watcher.OnExec(12345, "unknownproc")
 
 		assert.Equal(t, 0, callCount)
-		assert.False(t, watcher.IsAttached(12345))
+		assert.False(t, watcher.GetAttached()[12345])
 	})
 
 	t.Run("on_exec_duplicate_pid", func(t *testing.T) {

@@ -678,8 +678,8 @@ func loadBPFSpec() (*ebpf.CollectionSpec, error) {
 	return loadBpf()
 }
 
-// CommToString converts a comm buffer to a string.
-func CommToString(comm []byte) string {
+// commToString converts a null-terminated comm buffer to a string.
+func commToString(comm []byte) string {
 	for i, b := range comm {
 		if b == 0 {
 			return string(comm[:i])

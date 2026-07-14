@@ -192,13 +192,6 @@ func (w *TargetWatcher) Stop() {
 	close(w.stopCh)
 }
 
-// IsAttached returns whether a PID is already attached.
-func (w *TargetWatcher) IsAttached(pid int) bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.attached[pid]
-}
-
 // OnExec handles an exec event for a new process.
 func (w *TargetWatcher) OnExec(pid int, comm string) {
 	w.mu.Lock()

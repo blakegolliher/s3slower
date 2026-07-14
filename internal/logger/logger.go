@@ -27,26 +27,16 @@ type RotatingLogger struct {
 
 // Config holds logger configuration.
 type Config struct {
-	Dir        string // Log directory (default: /opt/s3slower)
-	Prefix     string // Log file prefix (default: s3slower)
-	MaxSizeMB  int    // Max size in MB before rotation (default: 100)
-	MaxBackups int    // Number of old logs to keep (default: 5)
-}
-
-// DefaultConfig returns default logger configuration.
-func DefaultConfig() Config {
-	return Config{
-		Dir:        "/opt/s3slower",
-		Prefix:     "s3slower",
-		MaxSizeMB:  100,
-		MaxBackups: 5,
-	}
+	Dir        string // Log directory
+	Prefix     string // Log file basename prefix
+	MaxSizeMB  int    // Max size in MB before rotation
+	MaxBackups int    // Number of old logs to keep
 }
 
 // NewRotatingLogger creates a new rotating logger.
 func NewRotatingLogger(cfg Config) (*RotatingLogger, error) {
 	if cfg.Dir == "" {
-		cfg.Dir = "/opt/s3slower"
+		cfg.Dir = "/var/log/s3slower"
 	}
 	if cfg.Prefix == "" {
 		cfg.Prefix = "s3slower"
