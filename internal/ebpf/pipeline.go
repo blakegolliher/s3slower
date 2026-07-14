@@ -9,6 +9,11 @@ import (
 	"github.com/s3slower/s3slower/internal/event"
 )
 
+// DropCallback is invoked whenever an event is dropped either at the
+// kernel perf ring (LostSamples > 0) or when the userspace channel is
+// full. Runner wires this to the Prometheus events_dropped_total counter.
+type DropCallback func(reason string, count uint64)
+
 // Pipeline connects the BPF tracer to the event processor.
 type Pipeline struct {
 	mu sync.RWMutex
@@ -18,6 +23,8 @@ type Pipeline struct {
 	running   bool
 	stopCh    chan struct{}
 	debug     bool
+
+	onDrop DropCallback
 
 	// Configuration
 	mode          ProbeMode
@@ -31,6 +38,15 @@ type Pipeline struct {
 	// attachedGoTLS tracks binaries with uprobes successfully attached.
 	checkedGoTLS  map[string]bool
 	attachedGoTLS map[string]bool
+}
+
+// SetDropCallback registers a callback invoked on every dropped event.
+// The callback runs on the perf-reader goroutine and must not block.
+func (p *Pipeline) SetDropCallback(cb DropCallback) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onDrop = cb
+	p.tracer.SetDropCallback(cb)
 }
 
 func (p *Pipeline) debugf(format string, args ...interface{}) {
@@ -225,8 +241,13 @@ func (p *Pipeline) handleEvent(raw *RawEvent) {
 	// Set client type
 	s3event.ClientType = clientTypeToString(raw.ClientType)
 
-	// Send to processor (non-blocking)
-	p.processor.SendEvent(s3event)
+	// Send to processor (non-blocking). If the buffer is full we drop and
+	// account for it so the drop is observable, not silent.
+	if !p.processor.SendEvent(s3event) {
+		if p.onDrop != nil {
+			p.onDrop("channel_full", 1)
+		}
+	}
 }
 
 // clientTypeToString converts a client type constant to a string.

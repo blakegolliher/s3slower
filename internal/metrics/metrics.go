@@ -19,7 +19,18 @@ type Metrics struct {
 	RequestBytesTotal   *prometheus.CounterVec
 	ResponseBytesTotal  *prometheus.CounterVec
 	ResponseStatusTotal *prometheus.CounterVec
+	EventsDroppedTotal  *prometheus.CounterVec
 }
+
+// DropReason values for the events_dropped_total metric.
+const (
+	// DropReasonPerfLost — the kernel ring buffer overflowed and lost
+	// samples before userspace could drain them.
+	DropReasonPerfLost = "perf_lost"
+	// DropReasonChannelFull — the userspace pipeline channel was full and
+	// the event was discarded rather than block the perf reader.
+	DropReasonChannelFull = "channel_full"
+)
 
 // DefaultLabels are the standard labels for all metrics.
 var DefaultLabels = []string{"hostname", "comm", "s3_operation", "bucket", "endpoint"}
@@ -72,6 +83,13 @@ func New(extraLabels []string) *Metrics {
 			},
 			[]string{"bucket", "status_code"},
 		),
+		EventsDroppedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "s3slower_events_dropped_total",
+				Help: "Total events dropped before reaching the exporter, by reason",
+			},
+			[]string{"reason"},
+		),
 	}
 
 	return m
@@ -86,6 +104,7 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 		m.RequestBytesTotal,
 		m.ResponseBytesTotal,
 		m.ResponseStatusTotal,
+		m.EventsDroppedTotal,
 	}
 
 	for _, c := range collectors {
@@ -95,6 +114,15 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 	}
 
 	return nil
+}
+
+// RecordDrop increments the events_dropped_total counter for a reason.
+// Reasons should come from the DropReason* constants for stability.
+func (m *Metrics) RecordDrop(reason string, count uint64) {
+	if count == 0 {
+		return
+	}
+	m.EventsDroppedTotal.WithLabelValues(reason).Add(float64(count))
 }
 
 // RecordRequest records a single S3 request.
