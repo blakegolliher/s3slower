@@ -102,8 +102,12 @@ type Runner struct {
 	hostname string
 
 	// localAddrs is the set of IPs and hostnames that identify this machine,
-	// used to filter out self-directed HTTP traffic (Grafana, Prometheus, etc.)
-	localAddrs map[string]bool
+	// used to filter out self-directed HTTP traffic (Grafana, Prometheus, etc.).
+	// It is populated eagerly with fast lookups (loopback, interface IPs,
+	// hostname) and then augmented in the background with reverse-DNS names,
+	// so slow resolvers don't stall startup.
+	localAddrsMu sync.RWMutex
+	localAddrs   map[string]bool
 }
 
 // New creates a new runner.
@@ -116,8 +120,9 @@ func New(cfg Config) (*Runner, error) {
 		config:       cfg,
 		minLatencyMs: cfg.MinLatencyMs,
 		hostname:     hn,
-		localAddrs:   collectLocalAddrs(hn),
+		localAddrs:   collectLocalAddrsFast(hn),
 	}
+	go r.resolveLocalAddrsBackground()
 
 	// Set up terminal output
 	if cfg.EnableTerminal {
@@ -542,7 +547,7 @@ func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
 		return false
 	}
 	// Reject traffic to this machine (Prometheus, Grafana, health checks)
-	if isLocalEndpoint(evt.Endpoint, r.localAddrs) {
+	if r.isLocalEndpoint(evt.Endpoint) {
 		return false
 	}
 	// Without S3 markers, only trust requests to IP-addressed endpoints.
@@ -551,17 +556,19 @@ func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
 	return httputil.IsIPAddress(evt.Endpoint)
 }
 
-// collectLocalAddrs builds a set of all IPs and hostnames that identify this machine.
-func collectLocalAddrs(hostname string) map[string]bool {
+// collectLocalAddrsFast returns the set of self-identifying addresses that
+// can be gathered without hitting DNS: loopback, the resolved hostname, and
+// every interface IP. Reverse-DNS names are added later by
+// resolveLocalAddrsBackground so a slow resolver never delays startup.
+func collectLocalAddrsFast(hostname string) map[string]bool {
 	addrs := map[string]bool{
 		"127.0.0.1": true,
 		"::1":       true,
-		"localhost":  true,
+		"localhost": true,
 	}
 	if hostname != "" {
 		addrs[hostname] = true
 	}
-	// Add all interface IPs
 	if ifaces, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range ifaces {
 			if ipNet, ok := a.(*net.IPNet); ok {
@@ -569,34 +576,47 @@ func collectLocalAddrs(hostname string) map[string]bool {
 			}
 		}
 	}
-	// Reverse-resolve local IPs to discover DNS names pointing to this machine
-	// (e.g., 10.143.11.203 → var203.selab.vastdata.com)
-	snapshot := make([]string, 0, len(addrs))
-	for a := range addrs {
-		snapshot = append(snapshot, a)
-	}
-	for _, ip := range snapshot {
-		if names, err := net.LookupAddr(ip); err == nil {
-			for _, name := range names {
-				name = strings.TrimSuffix(name, ".")
-				addrs[name] = true
-			}
-		}
-	}
 	return addrs
 }
 
-// isLocalEndpoint checks if an endpoint (host or host:port) belongs to this machine.
-// Uses net.SplitHostPort so IPv6 literals like "[::1]:9000", "::1", and
-// "fe80::1" are handled correctly — collectLocalAddrs stores unbracketed
-// forms, so a naive strings.LastIndex(":") split misses every IPv6 case.
-func isLocalEndpoint(endpoint string, localAddrs map[string]bool) bool {
+// resolveLocalAddrsBackground augments r.localAddrs with reverse-DNS names
+// for every local IP (e.g. 10.143.11.203 → var203.selab.vastdata.com).
+// Called once from New in its own goroutine; safe to skip failures.
+func (r *Runner) resolveLocalAddrsBackground() {
+	r.localAddrsMu.RLock()
+	ips := make([]string, 0, len(r.localAddrs))
+	for a := range r.localAddrs {
+		ips = append(ips, a)
+	}
+	r.localAddrsMu.RUnlock()
+
+	for _, ip := range ips {
+		names, err := net.LookupAddr(ip)
+		if err != nil {
+			continue
+		}
+		r.localAddrsMu.Lock()
+		for _, name := range names {
+			r.localAddrs[strings.TrimSuffix(name, ".")] = true
+		}
+		r.localAddrsMu.Unlock()
+	}
+}
+
+// isLocalEndpoint checks if an endpoint (host or host:port) belongs to this
+// machine. Uses net.SplitHostPort so IPv6 literals like "[::1]:9000", "::1",
+// and "fe80::1" are handled correctly — collectLocalAddrsFast stores
+// unbracketed forms, so a naive strings.LastIndex(":") split misses every
+// IPv6 case.
+func (r *Runner) isLocalEndpoint(endpoint string) bool {
 	host := endpoint
 	if h, _, err := net.SplitHostPort(endpoint); err == nil {
 		host = h
 	}
 	host = strings.Trim(host, "[]")
-	return localAddrs[host]
+	r.localAddrsMu.RLock()
+	defer r.localAddrsMu.RUnlock()
+	return r.localAddrs[host]
 }
 
 // debugf prints a debug message if debug mode is enabled.

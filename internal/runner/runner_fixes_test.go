@@ -12,14 +12,16 @@ import (
 )
 
 func TestIsLocalEndpoint(t *testing.T) {
-	addrs := map[string]bool{
-		"127.0.0.1":      true,
-		"::1":            true,
-		"localhost":      true,
-		"fe80::1":        true,
-		"10.143.11.203":  true,
-		"host.local":     true,
-		"2001:db8::dead": true,
+	r := &Runner{
+		localAddrs: map[string]bool{
+			"127.0.0.1":      true,
+			"::1":            true,
+			"localhost":      true,
+			"fe80::1":        true,
+			"10.143.11.203":  true,
+			"host.local":     true,
+			"2001:db8::dead": true,
+		},
 	}
 
 	cases := []struct {
@@ -51,7 +53,7 @@ func TestIsLocalEndpoint(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := isLocalEndpoint(tc.endpoint, addrs)
+		got := r.isLocalEndpoint(tc.endpoint)
 		assert.Equalf(t, tc.want, got, "isLocalEndpoint(%q)", tc.endpoint)
 	}
 }

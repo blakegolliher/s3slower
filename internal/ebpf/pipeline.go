@@ -43,61 +43,41 @@ type PipelineConfig struct {
 	Debug        bool
 }
 
-// NewPipeline creates a new event processing pipeline.
+const defaultBufferSize = 100
+
+// NewPipeline creates a new event processing pipeline backed by the real
+// eBPF tracer and library finder.
 func NewPipeline(config PipelineConfig) (*Pipeline, error) {
-	// Create the tracer
 	tracer, err := NewBPFTracer()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tracer: %w", err)
 	}
-
-	// Convert ms to us for latency filtering
-	minLatencyUs := config.MinLatencyMs * 1000
-
-	// Create event processor with latency filter
-	bufferSize := config.BufferSize
-	if bufferSize <= 0 {
-		bufferSize = 100
-	}
-
-	processor := event.NewEventProcessor(bufferSize)
-
-	return &Pipeline{
-		tracer:        tracer,
-		processor:     processor,
-		mode:          config.Mode,
-		targetPID:     config.TargetPID,
-		minLatencyUs:  minLatencyUs,
-		libraryPath:   config.LibraryPath,
-		libraryFinder: NewLibraryFinder(),
-		debug:         config.Debug,
-		stopCh:        make(chan struct{}),
-	}, nil
+	return newPipeline(tracer, NewLibraryFinder(), config), nil
 }
 
-// NewPipelineWithMock creates a pipeline with a mock tracer for testing.
+// NewPipelineWithMock returns a pipeline wired to the mock tracer / finder,
+// used for tests and as a fallback when the real BPF tracer cannot load
+// (e.g. running as non-root in development).
 func NewPipelineWithMock(config PipelineConfig) (*Pipeline, error) {
-	tracer := NewMockTracer()
+	return newPipeline(NewMockTracer(), NewMockLibraryFinder(), config), nil
+}
 
-	minLatencyUs := config.MinLatencyMs * 1000
+func newPipeline(tracer Tracer, finder LibraryFinder, config PipelineConfig) *Pipeline {
 	bufferSize := config.BufferSize
 	if bufferSize <= 0 {
-		bufferSize = 100
+		bufferSize = defaultBufferSize
 	}
-
-	processor := event.NewEventProcessor(bufferSize)
-
 	return &Pipeline{
 		tracer:        tracer,
-		processor:     processor,
+		processor:     event.NewEventProcessor(bufferSize),
 		mode:          config.Mode,
 		targetPID:     config.TargetPID,
-		minLatencyUs:  minLatencyUs,
+		minLatencyUs:  config.MinLatencyMs * 1000,
 		libraryPath:   config.LibraryPath,
-		libraryFinder: NewMockLibraryFinder(),
+		libraryFinder: finder,
 		debug:         config.Debug,
 		stopCh:        make(chan struct{}),
-	}, nil
+	}
 }
 
 // Start initializes and starts the pipeline.
