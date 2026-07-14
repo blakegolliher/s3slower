@@ -140,6 +140,11 @@ to enable metrics collection.`,
 				if appCfg.File.MaxBackups > 0 {
 					cfg.LogMaxBackups = appCfg.File.MaxBackups
 				}
+
+				// Optional Prometheus labels (bucket, endpoint) are off by
+				// default to keep cardinality bounded; the operator opts
+				// in via metrics.labels.
+				cfg.MetricsOptionalLabels = appCfg.Metrics.Labels
 			}
 
 			// Apply CLI flags (override config file)

@@ -2,46 +2,55 @@ groups:
   - name: s3slower.rules
     interval: 30s
     rules:
-      # Recording rules for better query performance
+      # Recording rules aggregate away high-cardinality labels so downstream
+      # queries and dashboards evaluate quickly. `instance` comes from the
+      # scrape config and identifies the host; `bucket` and `endpoint` are
+      # opt-in labels and only appear when metrics.labels enables them.
+
       - record: s3slower:request_rate_5m
-        expr: rate(s3slower_requests_total[5m])
+        expr: sum(rate(s3slower_requests_total[5m])) by (instance, comm, s3_operation)
 
       - record: s3slower:error_rate_5m
-        expr: rate(s3slower_request_errors_total[5m])
+        expr: sum(rate(s3slower_request_errors_total[5m])) by (instance, comm, s3_operation)
 
       - record: s3slower:throughput_bytes_5m
-        expr: rate(s3slower_request_bytes_total[5m]) + rate(s3slower_response_bytes_total[5m])
+        expr: |
+          sum(rate(s3slower_request_bytes_total[5m])) by (instance, comm, s3_operation)
+          + sum(rate(s3slower_response_bytes_total[5m])) by (instance, comm, s3_operation)
 
       - record: s3slower:request_duration_p50
-        expr: histogram_quantile(0.50, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le))
+        expr: histogram_quantile(0.50, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, instance, comm, s3_operation))
 
       - record: s3slower:request_duration_p95
-        expr: histogram_quantile(0.95, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le))
+        expr: histogram_quantile(0.95, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, instance, comm, s3_operation))
 
       - record: s3slower:request_duration_p99
-        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le))
+        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, instance, comm, s3_operation))
+
+      - record: s3slower:events_dropped_rate_5m
+        expr: sum(rate(s3slower_events_dropped_total[5m])) by (instance, reason)
 
   - name: s3slower.alerts
     rules:
       - alert: S3SlowerHighLatency
-        expr: histogram_quantile(0.95, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, hostname, comm, s3_operation)) > 1000
+        expr: histogram_quantile(0.95, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, instance, comm, s3_operation)) > 1000
         for: 5m
         labels:
           severity: warning
           component: s3slower
         annotations:
           summary: "High S3 latency detected"
-          description: "p95 latency is {{ $value }}ms (threshold: 1000ms) for {{ $labels.comm }} {{ $labels.s3_operation }} on {{ $labels.hostname }}"
+          description: "p95 latency is {{ $value }}ms (threshold: 1000ms) for {{ $labels.comm }} {{ $labels.s3_operation }} on {{ $labels.instance }}"
 
       - alert: S3SlowerHighErrorRate
-        expr: rate(s3slower_request_errors_total[5m]) > 0.1
+        expr: sum(rate(s3slower_request_errors_total[5m])) by (instance, comm) > 0.1
         for: 2m
         labels:
           severity: critical
           component: s3slower
         annotations:
           summary: "High S3 error rate detected"
-          description: "Error rate {{ $value }}/sec for {{ $labels.comm }} on {{ $labels.hostname }}"
+          description: "Error rate {{ $value }}/sec for {{ $labels.comm }} on {{ $labels.instance }}"
 
       - alert: S3SlowerExporterDown
         expr: up{job="s3slower"} == 0
@@ -54,11 +63,21 @@ groups:
           description: "S3Slower Prometheus exporter has been unreachable for over 1 minute"
 
       - alert: S3SlowerVeryHighLatency
-        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, hostname)) > 5000
+        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, instance)) > 5000
         for: 1m
         labels:
           severity: critical
           component: s3slower
         annotations:
           summary: "Very high S3 latency detected"
-          description: "p99 latency is {{ $value }}ms on {{ $labels.hostname }}"
+          description: "p99 latency is {{ $value }}ms on {{ $labels.instance }}"
+
+      - alert: S3SlowerEventsDropped
+        expr: sum(rate(s3slower_events_dropped_total[5m])) by (instance, reason) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: s3slower
+        annotations:
+          summary: "S3Slower is dropping events"
+          description: "s3slower is dropping events on {{ $labels.instance }} (reason={{ $labels.reason }}) at {{ $value }}/s — increase buffer or perf ring size"

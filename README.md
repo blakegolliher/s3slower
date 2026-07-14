@@ -90,9 +90,19 @@ file:
 | `s3slower_request_duration_ms` | Histogram | Latency distribution (ms) |
 | `s3slower_request_bytes_total` | Counter | Upload bytes |
 | `s3slower_response_bytes_total` | Counter | Download bytes |
-| `s3slower_response_status_total` | Counter | Responses by bucket + HTTP status code |
+| `s3slower_response_status_total` | Counter | Responses by HTTP status code (and bucket, if enabled) |
+| `s3slower_events_dropped_total` | Counter | Events dropped before reaching the exporter (`reason=perf_lost` for kernel-ring overflow, `channel_full` for userspace back-pressure) |
 
-Default labels: `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint`
+**Labels:** the always-on core is `comm` + `s3_operation`. `bucket` and `endpoint` are opt-in (high cardinality on multi-tenant deployments); enable with:
+
+```yaml
+metrics:
+  labels:
+    - bucket
+    - endpoint
+```
+
+The scrape-injected `instance` label identifies the host, so no explicit `hostname` label is added. Existing dashboards that referenced `hostname` should switch to `instance`.
 
 A local Grafana + Prometheus stack is included for development:
 ```bash

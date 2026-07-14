@@ -85,16 +85,15 @@ func TestOnProcessDetachRemovesLabels(t *testing.T) {
 // panicked with "inconsistent label cardinality". After the fix, missing
 // keys are filled with "".
 func TestHandleEventPrefillsExtraLabels(t *testing.T) {
-	// Construct metrics directly with a non-empty extra-label union so the
-	// registered vectors actually carry those keys.
-	union := []string{"client", "env"}
-	m := metrics.New(union)
+	optional := []string{"bucket", "endpoint"}
+	extra := []string{"client", "env"}
+	m := metrics.New(optional, extra)
 
 	r := &Runner{
-		config:         DefaultConfig(),
-		metrics:        m,
-		hostname:       "test-host",
-		extraLabelKeys: union,
+		config:            DefaultConfig(),
+		metrics:           m,
+		optionalLabelKeys: optional,
+		extraLabelKeys:    extra,
 	}
 
 	evt := &event.S3Event{
@@ -115,14 +114,15 @@ func TestHandleEventPrefillsExtraLabels(t *testing.T) {
 // present in targetLabels but carries only a subset of the registered union.
 // The fix must fill the absent keys with "" rather than leaving them unset.
 func TestHandleEventMergesPartialExtraLabels(t *testing.T) {
-	union := []string{"client", "env"}
-	m := metrics.New(union)
+	optional := []string{"bucket", "endpoint"}
+	extra := []string{"client", "env"}
+	m := metrics.New(optional, extra)
 
 	r := &Runner{
-		config:         DefaultConfig(),
-		metrics:        m,
-		hostname:       "test-host",
-		extraLabelKeys: union,
+		config:            DefaultConfig(),
+		metrics:           m,
+		optionalLabelKeys: optional,
+		extraLabelKeys:    extra,
 		targetLabels: map[uint32]map[string]string{
 			4242: {"client": "awscli"}, // no "env"
 		},
