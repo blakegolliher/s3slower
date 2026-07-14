@@ -475,20 +475,25 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 	return nil
 }
 
-// readEvents reads events from the perf buffer.
+// readEvents reads events from the perf buffer until the reader is closed.
+// reader.Read blocks; closing it during Stop() is what unblocks the call
+// and returns perf.ErrClosed, so shutdown exits cleanly. Any other error
+// logs once and backs off briefly so a wedged ring can't busy-spin a CPU.
 func (t *BPFTracer) readEvents() {
 	defer t.wg.Done()
-	for {
-		select {
-		case <-t.stopCh:
-			return
-		default:
-		}
+	const readErrBackoff = 100 * time.Millisecond
 
+	for {
 		record, err := t.reader.Read()
 		if err != nil {
 			if errors.Is(err, perf.ErrClosed) {
 				return
+			}
+			fmt.Fprintf(os.Stderr, "perf read error: %v\n", err)
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(readErrBackoff):
 			}
 			continue
 		}
@@ -500,7 +505,6 @@ func (t *BPFTracer) readEvents() {
 			continue
 		}
 
-		// Parse the event
 		event, err := parseRawEvent(record.RawSample)
 		if err != nil {
 			continue
@@ -598,20 +602,25 @@ func (t *BPFTracer) WatchExec(callback func(pid uint32)) error {
 	return nil
 }
 
-// readExecEvents reads exec notifications from the perf buffer.
+// readExecEvents reads exec notifications from the perf buffer. Same
+// shutdown model as readEvents — Close() on the reader returns
+// perf.ErrClosed and exits the loop cleanly. Non-close errors log once
+// and back off so a wedged ring can't busy-spin a CPU.
 func (t *BPFTracer) readExecEvents(reader *perf.Reader, callback func(pid uint32)) {
 	defer t.wg.Done()
-	for {
-		select {
-		case <-t.stopCh:
-			return
-		default:
-		}
+	const readErrBackoff = 100 * time.Millisecond
 
+	for {
 		record, err := reader.Read()
 		if err != nil {
 			if errors.Is(err, perf.ErrClosed) {
 				return
+			}
+			fmt.Fprintf(os.Stderr, "exec perf read error: %v\n", err)
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(readErrBackoff):
 			}
 			continue
 		}

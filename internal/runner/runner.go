@@ -113,7 +113,10 @@ type Runner struct {
 
 // New creates a new runner.
 func New(cfg Config) (*Runner, error) {
-	hn, _ := os.Hostname()
+	hn, err := os.Hostname()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to read hostname: %v\n", err)
+	}
 	r := &Runner{
 		config:       cfg,
 		minLatencyMs: cfg.MinLatencyMs,
@@ -259,13 +262,14 @@ func (r *Runner) handleAppConfigChange(cfg *config.AppConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Update min latency (can be changed at runtime)
-	if cfg.MinLatencyMs > 0 {
-		r.minLatencyMs = uint64(cfg.MinLatencyMs)
+	// Apply min latency unconditionally so setting min_latency_ms: 0 in
+	// the yaml actually clears a previously non-zero value.
+	newLatency := uint64(cfg.MinLatencyMs)
+	if newLatency != r.minLatencyMs {
+		r.minLatencyMs = newLatency
 		fmt.Fprintf(os.Stderr, "Updated min latency to %dms\n", cfg.MinLatencyMs)
 	}
 
-	// Debug mode change
 	if cfg.Debug != r.config.Debug {
 		r.config.Debug = cfg.Debug
 		fmt.Fprintf(os.Stderr, "Debug mode: %v\n", cfg.Debug)
