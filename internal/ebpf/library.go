@@ -8,10 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -422,36 +419,33 @@ func hasS2NSymbols(path string) bool {
 	return hasDefinedSymbols(path, true, "s2n_send", "s2n_recv")
 }
 
-// findLibrary finds a TLS library by mode.
+// findLibrary finds a TLS library by mode. Patterns are ordered by
+// preference (newest ABI first); the first hit wins. This avoids the
+// fragile "parse major version and sort" path that could reorder ordered
+// patterns and pick the wrong ABI on non-numeric versions (libnspr4.so
+// etc. all parse as major-version 0).
 func findLibrary(mode ProbeMode) (string, error) {
 	patterns := getLibraryPatterns(mode)
 	if len(patterns) == 0 {
 		return "", errors.New("unknown library mode")
 	}
 
-	// Try ldconfig first (fastest)
-	if paths := findViaLdconfig(patterns[0]); len(paths) > 0 {
-		return selectPreferredVersion(paths), nil
+	for _, pattern := range patterns {
+		if paths := findViaLdconfig(pattern); len(paths) > 0 {
+			return paths[0], nil
+		}
 	}
 
-	// Search common paths
-	searchPaths := getCommonLibraryPaths()
-	searchPaths = append(searchPaths, getArchSpecificPaths()...)
-
-	var found []string
-	for _, dir := range searchPaths {
-		for _, pattern := range patterns {
+	searchPaths := append(getCommonLibraryPaths(), getArchSpecificPaths()...)
+	for _, pattern := range patterns {
+		for _, dir := range searchPaths {
 			if path := findLibraryByPattern(dir, pattern); path != "" {
-				found = append(found, path)
+				return path, nil
 			}
 		}
 	}
 
-	if len(found) == 0 {
-		return "", errors.New("library not found: " + string(mode))
-	}
-
-	return selectPreferredVersion(found), nil
+	return "", errors.New("library not found: " + string(mode))
 }
 
 // getLibraryPatterns returns search patterns for a TLS library mode.
@@ -572,62 +566,6 @@ func parseLdConfigOutput(output, libName string) []string {
 	}
 
 	return paths
-}
-
-// parseLibraryVersion extracts version from library filename.
-func parseLibraryVersion(filename string) string {
-	// Pattern: libXXX.so.VERSION
-	re := regexp.MustCompile(`\.so\.(.+)$`)
-	matches := re.FindStringSubmatch(filename)
-	if len(matches) < 2 {
-		return ""
-	}
-	return matches[1]
-}
-
-// selectPreferredVersion selects the preferred library version from a list.
-func selectPreferredVersion(paths []string) string {
-	if len(paths) == 0 {
-		return ""
-	}
-
-	if len(paths) == 1 {
-		return paths[0]
-	}
-
-	// Sort by version (higher versions first)
-	sort.Slice(paths, func(i, j int) bool {
-		vi := parseLibraryVersion(filepath.Base(paths[i]))
-		vj := parseLibraryVersion(filepath.Base(paths[j]))
-
-		// Parse major version numbers for comparison
-		mi := parseMajorVersion(vi)
-		mj := parseMajorVersion(vj)
-
-		return mi > mj
-	})
-
-	return paths[0]
-}
-
-// parseMajorVersion extracts the major version number.
-func parseMajorVersion(version string) int {
-	if version == "" {
-		return 0
-	}
-
-	// Split on dots and take first part
-	parts := strings.Split(version, ".")
-	if len(parts) == 0 {
-		return 0
-	}
-
-	n, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0
-	}
-
-	return n
 }
 
 // validateLibraryPath validates that a library path exists and is a file.

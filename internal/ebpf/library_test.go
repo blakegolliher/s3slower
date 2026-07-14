@@ -231,55 +231,6 @@ func TestFindLibraryByPattern(t *testing.T) {
 	})
 }
 
-// TestLibraryVersionParsing tests parsing library version from filename.
-func TestLibraryVersionParsing(t *testing.T) {
-	tests := []struct {
-		name     string
-		filename string
-		want     string
-	}{
-		{"openssl3", "libssl.so.3", "3"},
-		{"openssl1.1", "libssl.so.1.1", "1.1"},
-		{"gnutls30", "libgnutls.so.30", "30"},
-		{"no_version", "libssl.so", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			version := parseLibraryVersion(tt.filename)
-			assert.Equal(t, tt.want, version)
-		})
-	}
-}
-
-// TestPreferredLibraryVersion tests selecting preferred library version.
-func TestPreferredLibraryVersion(t *testing.T) {
-	t.Run("prefers_higher_version", func(t *testing.T) {
-		libs := []string{
-			"/usr/lib/libssl.so.1.1",
-			"/usr/lib/libssl.so.3",
-			"/usr/lib/libssl.so",
-		}
-
-		result := selectPreferredVersion(libs)
-		assert.Equal(t, "/usr/lib/libssl.so.3", result)
-	})
-
-	t.Run("returns_first_when_no_versions", func(t *testing.T) {
-		libs := []string{
-			"/usr/lib/libssl.so",
-		}
-
-		result := selectPreferredVersion(libs)
-		assert.Equal(t, "/usr/lib/libssl.so", result)
-	})
-
-	t.Run("returns_empty_for_empty_list", func(t *testing.T) {
-		result := selectPreferredVersion([]string{})
-		assert.Empty(t, result)
-	})
-}
-
 // TestArchSpecificPaths tests architecture-specific library paths.
 func TestArchSpecificPaths(t *testing.T) {
 	t.Run("includes_x86_64_paths", func(t *testing.T) {
