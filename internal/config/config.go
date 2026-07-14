@@ -162,6 +162,7 @@ type AppConfig struct {
 	PID          int              `yaml:"pid,omitempty"`
 	Debug        bool             `yaml:"debug"`
 	Prometheus   PrometheusConfig `yaml:"prometheus"`
+	Metrics      MetricsConfig    `yaml:"metrics"`
 	File         FileConfig       `yaml:"file"`
 	Screen       ScreenConfig     `yaml:"screen"`
 }
@@ -170,6 +171,16 @@ type AppConfig struct {
 type PrometheusConfig struct {
 	Host string `yaml:"prom_exporter_host"`
 	Port int    `yaml:"prom_exporter_port"`
+}
+
+// MetricsConfig controls the Prometheus metric label set. The label set is
+// deliberately narrow by default (comm + s3_operation) to keep cardinality
+// bounded. High-cardinality labels are opt-in via Labels.
+type MetricsConfig struct {
+	// Labels is the list of optional labels to enable, in addition to the
+	// always-on core (comm, s3_operation). Recognised values: "bucket",
+	// "endpoint". Unknown values are ignored with a warning.
+	Labels []string `yaml:"labels"`
 }
 
 // FileConfig holds file driver (rotating log) settings.

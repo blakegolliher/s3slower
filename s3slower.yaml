@@ -17,6 +17,18 @@ prometheus:
   prom_exporter_host: "::"  # Listen on all interfaces
   prom_exporter_port: 9000
 
+# Prometheus metric labels
+# The core label set is always on: {comm, s3_operation}. The labels below
+# are opt-in and can add significant cardinality — enable only if you need
+# them and your Prometheus can handle it:
+#   - bucket:   one series per (bucket × comm × operation). Explodes on
+#               multi-tenant deployments with per-user buckets.
+#   - endpoint: one series per S3 endpoint address the client used.
+# metrics:
+#   labels:
+#     - bucket
+#     - endpoint
+
 # File driver
 # Stores captured S3 operations to a local log file with rotation.
 file:

@@ -52,6 +52,10 @@ type Config struct {
 	ConfigPath  string
 	TargetsPath string
 
+	// MetricsOptionalLabels lists high-cardinality Prometheus labels
+	// (bucket, endpoint) that operators have opted into. Empty by default.
+	MetricsOptionalLabels []string
+
 	// Debug
 	Debug bool
 }
@@ -75,14 +79,14 @@ func DefaultConfig() Config {
 
 // Runner manages the s3slower execution.
 type Runner struct {
-	config          Config
-	pipeline        *ebpf.Pipeline
-	terminal        *terminal.Writer
-	logger          *logger.RotatingLogger
-	exporter        *metrics.Exporter
-	metrics         *metrics.Metrics
-	configWatcher   *config.ConfigWatcher
-	targetWatcher   *watcher.TargetWatcher
+	config        Config
+	pipeline      *ebpf.Pipeline
+	terminal      *terminal.Writer
+	logger        *logger.RotatingLogger
+	exporter      *metrics.Exporter
+	metrics       *metrics.Metrics
+	configWatcher *config.ConfigWatcher
+	targetWatcher *watcher.TargetWatcher
 
 	// Mutex for config updates
 	mu           sync.RWMutex
@@ -92,14 +96,17 @@ type Runner struct {
 	// targetLabels maps PIDs to their target's Prometheus labels
 	targetLabels map[uint32]map[string]string
 
+	// optionalLabelKeys is the set of high-cardinality labels (bucket,
+	// endpoint) the operator has opted into via config.metrics.labels.
+	// Frozen at Runner creation because the Prometheus vectors are
+	// registered once with this schema.
+	optionalLabelKeys []string
+
 	// extraLabelKeys is the union of all per-target prom_labels keys.
 	// It mirrors the label set registered with the Prometheus vectors, so
 	// handleEvent can pre-fill every key (with "" when absent) and avoid a
 	// cardinality-mismatch panic inside client_golang.
 	extraLabelKeys []string
-
-	// hostname is the machine's hostname, used for Prometheus labels
-	hostname string
 
 	// localAddrs is the set of IPs and hostnames that identify this machine,
 	// used to filter out self-directed HTTP traffic (Grafana, Prometheus, etc.).
@@ -119,7 +126,6 @@ func New(cfg Config) (*Runner, error) {
 	r := &Runner{
 		config:       cfg,
 		minLatencyMs: cfg.MinLatencyMs,
-		hostname:     hn,
 		localAddrs:   collectLocalAddrsFast(hn),
 	}
 	go r.resolveLocalAddrsBackground()
@@ -204,8 +210,9 @@ func New(cfg Config) (*Runner, error) {
 	// label keys because the vectors themselves are registered once.
 	if cfg.EnablePrometheus {
 		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
+		r.optionalLabelKeys = validateOptionalLabels(cfg.MetricsOptionalLabels)
 		r.extraLabelKeys = config.CollectExtraLabelKeys(r.targets)
-		exporter, err := metrics.NewExporter(addr, r.extraLabelKeys)
+		exporter, err := metrics.NewExporter(addr, r.optionalLabelKeys, r.extraLabelKeys)
 		if err != nil {
 			return nil, fmt.Errorf("create Prometheus exporter: %w", err)
 		}
@@ -487,11 +494,16 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 	// Record Prometheus metrics
 	if r.metrics != nil {
 		labels := map[string]string{
-			"hostname":     r.hostname,
 			"comm":         evt.ClientType,
 			"s3_operation": string(evt.Operation),
-			"bucket":       evt.Bucket,
-			"endpoint":     evt.Endpoint,
+		}
+		for _, k := range r.optionalLabelKeys {
+			switch k {
+			case "bucket":
+				labels["bucket"] = evt.Bucket
+			case "endpoint":
+				labels["endpoint"] = evt.Endpoint
+			}
 		}
 
 		// Pre-fill every registered extra-label key so the call to
@@ -557,6 +569,30 @@ func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
 	// On-prem S3 endpoints use IPs (e.g., 172.200.203.3); non-S3 noise
 	// targets DNS hostnames (mirrors.rit.edu, pypi.org, etc.).
 	return httputil.IsIPAddress(evt.Endpoint)
+}
+
+// validateOptionalLabels returns the subset of requested labels that are
+// known optional labels. Unknown values are logged and dropped so a typo
+// in the config file doesn't produce a mismatched Prometheus schema.
+func validateOptionalLabels(requested []string) []string {
+	if len(requested) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(requested))
+	out := make([]string, 0, len(requested))
+	for _, name := range requested {
+		if seen[name] {
+			continue
+		}
+		if !metrics.IsOptionalLabel(name) {
+			fmt.Fprintf(os.Stderr, "Warning: metrics.labels: ignoring unknown label %q (valid: %v)\n",
+				name, metrics.OptionalLabels)
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // collectLocalAddrsFast returns the set of self-identifying addresses that

@@ -191,29 +191,44 @@ Output formats: `table` (default), `simple`, `json`
 
 ## Prometheus Metrics
 
-When running with `--prometheus`, the following metrics are exported on `/metrics`:
+When running with `--prometheus`, the following metrics are exported on `/metrics`.
+
+**Core labels (always on):** `comm`, `s3_operation`. The identifying host is expressed via the Prometheus scrape label `instance`, so no explicit `hostname` label is added.
+
+**Optional labels (opt in):** `bucket`, `endpoint`. These are high-cardinality — enable them only if you can afford the extra series. Enable via config:
+
+```yaml
+metrics:
+  labels:
+    - bucket
+    - endpoint
+```
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `s3slower_requests_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total S3 requests |
-| `s3slower_request_errors_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total request errors (HTTP 4xx/5xx) |
-| `s3slower_request_duration_ms` | Histogram | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Request latency distribution |
-| `s3slower_request_bytes_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total request (upload) bytes |
-| `s3slower_response_bytes_total` | Counter | `hostname`, `comm`, `s3_operation`, `bucket`, `endpoint` | Total response (download) bytes |
-| `s3slower_response_status_total` | Counter | `bucket`, `status_code` | Response count by bucket and HTTP status code |
+| `s3slower_requests_total` | Counter | core + optional + target labels | Total S3 requests |
+| `s3slower_request_errors_total` | Counter | core + optional + target labels | Total request errors (HTTP 4xx/5xx) |
+| `s3slower_request_duration_ms` | Histogram | core + optional + target labels | Request latency distribution |
+| `s3slower_request_bytes_total` | Counter | core + optional + target labels | Total request (upload) bytes |
+| `s3slower_response_bytes_total` | Counter | core + optional + target labels | Total response (download) bytes |
+| `s3slower_response_status_total` | Counter | `status_code` (+ `bucket` if enabled) | Response count by HTTP status code |
 | `s3slower_events_dropped_total` | Counter | `reason` | Events dropped before reaching the exporter (`reason` is `perf_lost` for kernel-ring overflow or `channel_full` for userspace back-pressure) |
 
 Histogram buckets: 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms
 
-The `s3slower_response_status_total` metric tracks every HTTP status code per bucket, enabling queries like:
+The `s3slower_response_status_total` metric tracks HTTP status codes cluster-wide by default; enable `bucket` to break it down per bucket:
 
 ```promql
-# 5xx error rate per bucket over the last 5 minutes
-rate(s3slower_response_status_total{status_code=~"5.."}[5m])
+# 5xx rate across the fleet
+sum(rate(s3slower_response_status_total{status_code=~"5.."}[5m]))
 
-# Breakdown of all status codes for a specific bucket
-s3slower_response_status_total{bucket="my-bucket"}
+# With bucket enabled: 5xx rate per bucket
+sum by (bucket) (rate(s3slower_response_status_total{status_code=~"5.."}[5m]))
 ```
+
+### Migrating from earlier versions
+
+Earlier releases enabled `hostname`, `bucket`, and `endpoint` labels by default on every metric. Existing dashboards that reference `hostname` should be rewritten to use `instance` (which Prometheus injects from the scrape target). Dashboards that group by `bucket` or `endpoint` will need `metrics.labels` to enable them.
 
 ## S3 Operation Detection
 

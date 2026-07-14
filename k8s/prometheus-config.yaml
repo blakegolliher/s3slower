@@ -61,36 +61,39 @@ data:
     - name: s3slower.rules
       interval: 30s
       rules:
-      # Recording rules for better query performance
+      # Recording rules. `instance` comes from the scrape config and
+      # identifies the host, replacing the old explicit `hostname` label.
       - record: s3slower:request_rate_5m
-        expr: rate(s3slower_requests_total[5m])
-      
+        expr: sum(rate(s3slower_requests_total[5m])) by (instance, comm, s3_operation)
+
       - record: s3slower:error_rate_5m
-        expr: rate(s3slower_request_errors_total[5m])
-      
+        expr: sum(rate(s3slower_request_errors_total[5m])) by (instance, comm, s3_operation)
+
       - record: s3slower:throughput_bytes_5m
-        expr: rate(s3slower_request_bytes_total[5m]) + rate(s3slower_response_bytes_total[5m])
+        expr: |
+          sum(rate(s3slower_request_bytes_total[5m])) by (instance, comm, s3_operation)
+          + sum(rate(s3slower_response_bytes_total[5m])) by (instance, comm, s3_operation)
 
       # Alerting rules
       - alert: S3SlowerHighLatency
-        expr: s3slower_request_duration_ms > 1000
+        expr: histogram_quantile(0.95, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, instance, comm, s3_operation)) > 1000
         for: 5m
         labels:
           severity: warning
           component: s3slower
         annotations:
           summary: "High S3 latency detected"
-          description: "Process {{ $labels.comm }} on {{ $labels.hostname }} has S3 {{ $labels.s3_operation }} latency of {{ $value }}ms for 5 minutes"
+          description: "Process {{ $labels.comm }} on {{ $labels.instance }} has S3 {{ $labels.s3_operation }} p95 latency of {{ $value }}ms for 5 minutes"
 
       - alert: S3SlowerHighErrorRate
-        expr: s3slower:error_rate_5m > 0.1
+        expr: sum(rate(s3slower_request_errors_total[5m])) by (instance, comm) > 0.1
         for: 2m
         labels:
           severity: critical
           component: s3slower
         annotations:
           summary: "High S3 error rate detected"
-          description: "Process {{ $labels.comm }} on {{ $labels.hostname }} has S3 error rate of {{ $value }}/sec"
+          description: "Process {{ $labels.comm }} on {{ $labels.instance }} has S3 error rate of {{ $value }}/sec"
 
       - alert: S3SlowerExporterDown
         expr: up{job="s3slower"} == 0
@@ -103,11 +106,11 @@ data:
           description: "S3Slower exporter on {{ $labels.kubernetes_node_name }} has been down for more than 1 minute"
 
       - alert: S3SlowerVeryHighLatency
-        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, hostname)) > 5000
+        expr: histogram_quantile(0.99, sum(rate(s3slower_request_duration_ms_bucket[5m])) by (le, instance)) > 5000
         for: 1m
         labels:
           severity: critical
           component: s3slower
         annotations:
           summary: "Very high S3 latency detected"
-          description: "p99 latency is {{ $value }}ms on {{ $labels.hostname }}" 
+          description: "p99 latency is {{ $value }}ms on {{ $labels.instance }}"
