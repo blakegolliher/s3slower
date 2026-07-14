@@ -22,7 +22,6 @@ type S3Event struct {
 
 	// Request details
 	Method    string
-	Host      string
 	Path      string
 	Operation http.S3Operation
 	Bucket    string
@@ -36,14 +35,8 @@ type S3Event struct {
 	StatusCode int
 	IsError    bool
 
-	// File descriptor for correlation
-	FD int32
-
 	// S3 traffic detection
 	IsS3Traffic bool
-
-	// Raw data sample (first bytes of request)
-	RawData []byte
 }
 
 // NewS3Event creates a new S3Event from raw BPF event data.
@@ -58,28 +51,15 @@ func (e *S3Event) ParseFromRaw(data []byte) {
 	method, host, path, contentLength := http.ParseHTTPRequest(data)
 
 	e.Method = method
-	e.Host = host
 	e.Path = path
 
 	if contentLength > 0 {
 		e.RequestSize = uint32(contentLength)
 	}
 
-	// Detect S3 operation
 	e.Operation = http.DetectS3Operation(method, path)
-
-	// Extract bucket and endpoint
 	e.Bucket, e.Endpoint = http.ParseBucketEndpoint(host, path)
-
-	// Check for S3-specific headers (x-amz-*, AWS4-HMAC-SHA256)
 	e.IsS3Traffic = http.IsLikelyS3Traffic(data)
-
-	// Store raw data for debugging
-	if len(data) > 64 {
-		e.RawData = data[:64]
-	} else {
-		e.RawData = data
-	}
 }
 
 // ParseStatusCode extracts the status code and Content-Length from response data.

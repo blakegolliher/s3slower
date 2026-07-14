@@ -17,6 +17,7 @@ type MockTracer struct {
 	minLatency uint64
 	probes     []string
 	callback   EventCallback
+	onDrop     func(reason string, count uint64)
 	loadErr    error
 	uprobeErr  error
 
@@ -179,6 +180,14 @@ func (m *MockTracer) SetMinLatency(latencyUs uint64) {
 	defer m.mu.Unlock()
 
 	m.minLatency = latencyUs
+}
+
+// SetDropCallback satisfies the Tracer interface. The mock does not emit
+// perf-ring loss events, so the callback is stored but never invoked.
+func (m *MockTracer) SetDropCallback(cb func(reason string, count uint64)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onDrop = cb
 }
 
 // IsLoaded returns whether the tracer is loaded. Test-only inspection hook.

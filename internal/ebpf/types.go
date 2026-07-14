@@ -5,16 +5,6 @@ import (
 	"time"
 )
 
-// ProbeType represents the type of probe to attach.
-type ProbeType int
-
-const (
-	// ProbeTypeKprobe attaches to kernel functions (syscalls).
-	ProbeTypeKprobe ProbeType = iota
-	// ProbeTypeUprobe attaches to userspace functions (SSL libraries).
-	ProbeTypeUprobe
-)
-
 // ProbeMode represents the tracing mode.
 type ProbeMode string
 
@@ -77,21 +67,6 @@ const (
 // EventCallback is called for each captured event.
 type EventCallback func(event *RawEvent)
 
-// ProbeConfig holds configuration for probe attachment.
-type ProbeConfig struct {
-	// Mode specifies the probe mode (http, openssl, etc.)
-	Mode ProbeMode
-
-	// TargetPID filters events to a specific process (0 = all)
-	TargetPID uint32
-
-	// MinLatencyUs filters events below this latency threshold
-	MinLatencyUs uint64
-
-	// LibraryPath is the path to the TLS library (for uprobes)
-	LibraryPath string
-}
-
 // ProbeStats holds statistics about probe operation.
 type ProbeStats struct {
 	EventsReceived uint64
@@ -142,6 +117,11 @@ type Tracer interface {
 
 	// SetMinLatency sets the minimum latency filter.
 	SetMinLatency(latencyUs uint64)
+
+	// SetDropCallback registers a callback invoked whenever the perf ring
+	// reports lost samples. Called from the perf-reader goroutine and must
+	// not block.
+	SetDropCallback(cb func(reason string, count uint64))
 }
 
 // LibraryFinder finds TLS library paths on the system.

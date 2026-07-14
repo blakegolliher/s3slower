@@ -35,6 +35,7 @@ type BPFTracer struct {
 
 	links    []link.Link
 	callback EventCallback
+	onDrop   func(reason string, count uint64)
 	running  bool
 	stopCh   chan struct{}
 
@@ -475,20 +476,25 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 	return nil
 }
 
-// readEvents reads events from the perf buffer.
+// readEvents reads events from the perf buffer until the reader is closed.
+// reader.Read blocks; closing it during Stop() is what unblocks the call
+// and returns perf.ErrClosed, so shutdown exits cleanly. Any other error
+// logs once and backs off briefly so a wedged ring can't busy-spin a CPU.
 func (t *BPFTracer) readEvents() {
 	defer t.wg.Done()
-	for {
-		select {
-		case <-t.stopCh:
-			return
-		default:
-		}
+	const readErrBackoff = 100 * time.Millisecond
 
+	for {
 		record, err := t.reader.Read()
 		if err != nil {
 			if errors.Is(err, perf.ErrClosed) {
 				return
+			}
+			fmt.Fprintf(os.Stderr, "perf read error: %v\n", err)
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(readErrBackoff):
 			}
 			continue
 		}
@@ -496,11 +502,14 @@ func (t *BPFTracer) readEvents() {
 		if record.LostSamples > 0 {
 			t.mu.Lock()
 			t.eventsDrop += record.LostSamples
+			cb := t.onDrop
 			t.mu.Unlock()
+			if cb != nil {
+				cb("perf_lost", record.LostSamples)
+			}
 			continue
 		}
 
-		// Parse the event
 		event, err := parseRawEvent(record.RawSample)
 		if err != nil {
 			continue
@@ -598,20 +607,25 @@ func (t *BPFTracer) WatchExec(callback func(pid uint32)) error {
 	return nil
 }
 
-// readExecEvents reads exec notifications from the perf buffer.
+// readExecEvents reads exec notifications from the perf buffer. Same
+// shutdown model as readEvents — Close() on the reader returns
+// perf.ErrClosed and exits the loop cleanly. Non-close errors log once
+// and back off so a wedged ring can't busy-spin a CPU.
 func (t *BPFTracer) readExecEvents(reader *perf.Reader, callback func(pid uint32)) {
 	defer t.wg.Done()
-	for {
-		select {
-		case <-t.stopCh:
-			return
-		default:
-		}
+	const readErrBackoff = 100 * time.Millisecond
 
+	for {
 		record, err := reader.Read()
 		if err != nil {
 			if errors.Is(err, perf.ErrClosed) {
 				return
+			}
+			fmt.Fprintf(os.Stderr, "exec perf read error: %v\n", err)
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(readErrBackoff):
 			}
 			continue
 		}
@@ -656,6 +670,13 @@ func (t *BPFTracer) SetTargetPID(pid uint32) {
 	}
 }
 
+// SetDropCallback registers a callback invoked on every perf-ring loss.
+func (t *BPFTracer) SetDropCallback(cb func(reason string, count uint64)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onDrop = cb
+}
+
 // SetMinLatency sets the minimum latency filter.
 func (t *BPFTracer) SetMinLatency(latencyUs uint64) {
 	t.mu.Lock()
@@ -678,8 +699,8 @@ func loadBPFSpec() (*ebpf.CollectionSpec, error) {
 	return loadBpf()
 }
 
-// CommToString converts a comm buffer to a string.
-func CommToString(comm []byte) string {
+// commToString converts a null-terminated comm buffer to a string.
+func commToString(comm []byte) string {
 	for i, b := range comm {
 		if b == 0 {
 			return string(comm[:i])

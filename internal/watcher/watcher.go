@@ -2,6 +2,7 @@
 package watcher
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -192,13 +193,6 @@ func (w *TargetWatcher) Stop() {
 	close(w.stopCh)
 }
 
-// IsAttached returns whether a PID is already attached.
-func (w *TargetWatcher) IsAttached(pid int) bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.attached[pid]
-}
-
 // OnExec handles an exec event for a new process.
 func (w *TargetWatcher) OnExec(pid int, comm string) {
 	w.mu.Lock()
@@ -247,7 +241,7 @@ func (w *TargetWatcher) CleanupExited() {
 	defer w.mu.Unlock()
 
 	for pid := range w.attached {
-		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); os.IsNotExist(err) {
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); errors.Is(err, os.ErrNotExist) {
 			delete(w.attached, pid)
 			if w.detachCallback != nil {
 				w.detachCallback(pid)

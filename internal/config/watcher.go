@@ -68,14 +68,11 @@ func NewConfigWatcher(configPath, targetsPath string) (*ConfigWatcher, error) {
 		}
 		cw.targets = targets
 
-		// Watch the targets file's directory (may be same as config dir)
-		dir := filepath.Dir(targetsPath)
-		if err := watcher.Add(dir); err != nil {
-			// Ignore if already watching
-			if err.Error() != "can't watch non-existent file" {
-				// Try to add anyway, may already be watching
-			}
-		}
+		// Watch the targets file's directory. When it's the same directory
+		// as the config file, fsnotify treats the second Add as a no-op;
+		// either way any failure here is safe to ignore because the config
+		// file's watch already covers a shared directory.
+		_ = watcher.Add(filepath.Dir(targetsPath))
 	}
 
 	return cw, nil

@@ -9,6 +9,11 @@ import (
 	"github.com/s3slower/s3slower/internal/event"
 )
 
+// DropCallback is invoked whenever an event is dropped either at the
+// kernel perf ring (LostSamples > 0) or when the userspace channel is
+// full. Runner wires this to the Prometheus events_dropped_total counter.
+type DropCallback func(reason string, count uint64)
+
 // Pipeline connects the BPF tracer to the event processor.
 type Pipeline struct {
 	mu sync.RWMutex
@@ -18,6 +23,8 @@ type Pipeline struct {
 	running   bool
 	stopCh    chan struct{}
 	debug     bool
+
+	onDrop DropCallback
 
 	// Configuration
 	mode          ProbeMode
@@ -31,6 +38,15 @@ type Pipeline struct {
 	// attachedGoTLS tracks binaries with uprobes successfully attached.
 	checkedGoTLS  map[string]bool
 	attachedGoTLS map[string]bool
+}
+
+// SetDropCallback registers a callback invoked on every dropped event.
+// The callback runs on the perf-reader goroutine and must not block.
+func (p *Pipeline) SetDropCallback(cb DropCallback) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onDrop = cb
+	p.tracer.SetDropCallback(cb)
 }
 
 func (p *Pipeline) debugf(format string, args ...interface{}) {
@@ -49,61 +65,41 @@ type PipelineConfig struct {
 	Debug        bool
 }
 
-// NewPipeline creates a new event processing pipeline.
+const defaultBufferSize = 100
+
+// NewPipeline creates a new event processing pipeline backed by the real
+// eBPF tracer and library finder.
 func NewPipeline(config PipelineConfig) (*Pipeline, error) {
-	// Create the tracer
 	tracer, err := NewBPFTracer()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tracer: %w", err)
 	}
-
-	// Convert ms to us for latency filtering
-	minLatencyUs := config.MinLatencyMs * 1000
-
-	// Create event processor with latency filter
-	bufferSize := config.BufferSize
-	if bufferSize <= 0 {
-		bufferSize = 100
-	}
-
-	processor := event.NewEventProcessor(bufferSize)
-
-	return &Pipeline{
-		tracer:        tracer,
-		processor:     processor,
-		mode:          config.Mode,
-		targetPID:     config.TargetPID,
-		minLatencyUs:  minLatencyUs,
-		libraryPath:   config.LibraryPath,
-		libraryFinder: NewLibraryFinder(),
-		debug:         config.Debug,
-		stopCh:        make(chan struct{}),
-	}, nil
+	return newPipeline(tracer, NewLibraryFinder(), config), nil
 }
 
-// NewPipelineWithMock creates a pipeline with a mock tracer for testing.
+// NewPipelineWithMock returns a pipeline wired to the mock tracer / finder,
+// used for tests and as a fallback when the real BPF tracer cannot load
+// (e.g. running as non-root in development).
 func NewPipelineWithMock(config PipelineConfig) (*Pipeline, error) {
-	tracer := NewMockTracer()
+	return newPipeline(NewMockTracer(), NewMockLibraryFinder(), config), nil
+}
 
-	minLatencyUs := config.MinLatencyMs * 1000
+func newPipeline(tracer Tracer, finder LibraryFinder, config PipelineConfig) *Pipeline {
 	bufferSize := config.BufferSize
 	if bufferSize <= 0 {
-		bufferSize = 100
+		bufferSize = defaultBufferSize
 	}
-
-	processor := event.NewEventProcessor(bufferSize)
-
 	return &Pipeline{
 		tracer:        tracer,
-		processor:     processor,
+		processor:     event.NewEventProcessor(bufferSize),
 		mode:          config.Mode,
 		targetPID:     config.TargetPID,
-		minLatencyUs:  minLatencyUs,
+		minLatencyUs:  config.MinLatencyMs * 1000,
 		libraryPath:   config.LibraryPath,
-		libraryFinder: NewMockLibraryFinder(),
+		libraryFinder: finder,
 		debug:         config.Debug,
 		stopCh:        make(chan struct{}),
-	}, nil
+	}
 }
 
 // Start initializes and starts the pipeline.
@@ -227,11 +223,9 @@ func (p *Pipeline) handleEvent(raw *RawEvent) {
 	// Convert raw event to S3Event
 	s3event := event.NewS3Event()
 
-	// Set basic fields
 	s3event.PID = raw.PID
 	s3event.TID = raw.TID
-	s3event.FD = int32(raw.FD)
-	s3event.Comm = CommToString(raw.Comm[:])
+	s3event.Comm = commToString(raw.Comm[:])
 	s3event.RequestSize = raw.ReqSize
 	s3event.ResponseSize = raw.RespSize
 
@@ -247,8 +241,13 @@ func (p *Pipeline) handleEvent(raw *RawEvent) {
 	// Set client type
 	s3event.ClientType = clientTypeToString(raw.ClientType)
 
-	// Send to processor (non-blocking)
-	p.processor.SendEvent(s3event)
+	// Send to processor (non-blocking). If the buffer is full we drop and
+	// account for it so the drop is observable, not silent.
+	if !p.processor.SendEvent(s3event) {
+		if p.onDrop != nil {
+			p.onDrop("channel_full", 1)
+		}
+	}
 }
 
 // clientTypeToString converts a client type constant to a string.

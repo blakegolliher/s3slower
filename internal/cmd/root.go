@@ -140,6 +140,11 @@ to enable metrics collection.`,
 				if appCfg.File.MaxBackups > 0 {
 					cfg.LogMaxBackups = appCfg.File.MaxBackups
 				}
+
+				// Optional Prometheus labels (bucket, endpoint) are off by
+				// default to keep cardinality bounded; the operator opts
+				// in via metrics.labels.
+				cfg.MetricsOptionalLabels = appCfg.Metrics.Labels
 			}
 
 			// Apply CLI flags (override config file)
@@ -238,8 +243,8 @@ func newAttachCommand() *cobra.Command {
 This is useful for debugging or monitoring a single application.
 The tracer will automatically detect the TLS library used.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if pid == 0 {
-				return cmd.Help()
+			if pid <= 0 {
+				return fmt.Errorf("--pid is required and must be a positive process ID")
 			}
 
 			cfg := runner.DefaultConfig()

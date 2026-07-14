@@ -8,24 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestProbeType tests probe type constants.
-func TestProbeType(t *testing.T) {
-	tests := []struct {
-		name      string
-		probeType ProbeType
-		want      int
-	}{
-		{"kprobe", ProbeTypeKprobe, 0},
-		{"uprobe", ProbeTypeUprobe, 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, int(tt.probeType))
-		})
-	}
-}
-
 // TestProbeMode tests probe mode constants.
 func TestProbeMode(t *testing.T) {
 	tests := []struct {
@@ -112,36 +94,6 @@ func TestClientTypeConstants(t *testing.T) {
 			assert.Equal(t, tt.want, tt.clientType)
 		})
 	}
-}
-
-// TestProbeConfig tests the ProbeConfig struct.
-func TestProbeConfig(t *testing.T) {
-	t.Run("creates_config_with_defaults", func(t *testing.T) {
-		config := ProbeConfig{
-			Mode:         ProbeModeHTTP,
-			TargetPID:    0,
-			MinLatencyUs: 0,
-		}
-
-		assert.Equal(t, ProbeModeHTTP, config.Mode)
-		assert.Equal(t, uint32(0), config.TargetPID)
-		assert.Equal(t, uint64(0), config.MinLatencyUs)
-		assert.Empty(t, config.LibraryPath)
-	})
-
-	t.Run("creates_config_for_openssl", func(t *testing.T) {
-		config := ProbeConfig{
-			Mode:         ProbeModeOpenSSL,
-			TargetPID:    12345,
-			MinLatencyUs: 1000,
-			LibraryPath:  "/usr/lib/x86_64-linux-gnu/libssl.so.3",
-		}
-
-		assert.Equal(t, ProbeModeOpenSSL, config.Mode)
-		assert.Equal(t, uint32(12345), config.TargetPID)
-		assert.Equal(t, uint64(1000), config.MinLatencyUs)
-		assert.Equal(t, "/usr/lib/x86_64-linux-gnu/libssl.so.3", config.LibraryPath)
-	})
 }
 
 // TestProbeStats tests the ProbeStats struct.
@@ -454,16 +406,6 @@ func TestEventFiltering(t *testing.T) {
 
 		tracer.Stop()
 	})
-}
-
-// helper function - will be implemented in tracer.go
-func commToString(comm []byte) string {
-	for i, b := range comm {
-		if b == 0 {
-			return string(comm[:i])
-		}
-	}
-	return string(comm)
 }
 
 // BenchmarkEventProcessing benchmarks event processing overhead.

@@ -53,6 +53,10 @@ type Config struct {
 	ConfigPath  string
 	TargetsPath string
 
+	// MetricsOptionalLabels lists high-cardinality Prometheus labels
+	// (bucket, endpoint) that operators have opted into. Empty by default.
+	MetricsOptionalLabels []string
+
 	// Debug
 	Debug bool
 }
@@ -97,29 +101,39 @@ type Runner struct {
 	// can warn about changes to settings that only take effect at startup.
 	lastAppCfg *config.AppConfig
 
+	// optionalLabelKeys is the set of high-cardinality labels (bucket,
+	// endpoint) the operator has opted into via config.metrics.labels.
+	// Frozen at Runner creation because the Prometheus vectors are
+	// registered once with this schema.
+	optionalLabelKeys []string
+
 	// extraLabelKeys is the union of all per-target prom_labels keys.
 	// It mirrors the label set registered with the Prometheus vectors, so
-	// handleEvent can pre-fill every key (with "" when absent) and avoid a
-	// cardinality-mismatch panic inside client_golang.
+	// handleEvent can pre-fill every key (with "" when absent) and avoid
+	// a cardinality-mismatch panic inside client_golang.
 	extraLabelKeys []string
 
-	// hostname is the machine's hostname, used for Prometheus labels
-	hostname string
-
 	// localAddrs is the set of IPs and hostnames that identify this machine,
-	// used to filter out self-directed HTTP traffic (Grafana, Prometheus, etc.)
-	localAddrs map[string]bool
+	// used to filter out self-directed HTTP traffic (Grafana, Prometheus,
+	// etc.). It is populated eagerly with fast, DNS-free lookups (loopback,
+	// interface IPs, hostname) and augmented in the background with
+	// reverse-DNS names, so slow resolvers don't stall startup.
+	localAddrsMu sync.RWMutex
+	localAddrs   map[string]bool
 }
 
 // New creates a new runner.
 func New(cfg Config) (*Runner, error) {
-	hn, _ := os.Hostname()
+	hn, err := os.Hostname()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to read hostname: %v\n", err)
+	}
 	r := &Runner{
 		config:       cfg,
 		minLatencyMs: cfg.MinLatencyMs,
-		hostname:     hn,
-		localAddrs:   collectLocalAddrs(hn),
+		localAddrs:   collectLocalAddrsFast(hn),
 	}
+	go r.resolveLocalAddrsBackground()
 
 	// Set up terminal output
 	if cfg.EnableTerminal {
@@ -201,8 +215,9 @@ func New(cfg Config) (*Runner, error) {
 	// label keys because the vectors themselves are registered once.
 	if cfg.EnablePrometheus {
 		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
+		r.optionalLabelKeys = validateOptionalLabels(cfg.MetricsOptionalLabels)
 		r.extraLabelKeys = config.CollectExtraLabelKeys(r.targets)
-		exporter, err := metrics.NewExporter(addr, r.extraLabelKeys)
+		exporter, err := metrics.NewExporter(addr, r.optionalLabelKeys, r.extraLabelKeys)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create prometheus exporter: %w", err)
 		}
@@ -259,13 +274,14 @@ func (r *Runner) handleAppConfigChange(cfg *config.AppConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Update min latency (can be changed at runtime)
-	if cfg.MinLatencyMs > 0 {
-		r.minLatencyMs = uint64(cfg.MinLatencyMs)
+	// Apply min latency unconditionally so setting min_latency_ms: 0 in
+	// the yaml actually clears a previously non-zero value.
+	newLatency := uint64(cfg.MinLatencyMs)
+	if newLatency != r.minLatencyMs {
+		r.minLatencyMs = newLatency
 		fmt.Fprintf(os.Stderr, "Updated min latency to %dms\n", cfg.MinLatencyMs)
 	}
 
-	// Debug mode change
 	if cfg.Debug != r.config.Debug {
 		r.config.Debug = cfg.Debug
 		fmt.Fprintf(os.Stderr, "Debug mode: %v\n", cfg.Debug)
@@ -381,6 +397,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 	r.pipeline = pipeline
+	if r.metrics != nil {
+		r.pipeline.SetDropCallback(r.metrics.RecordDrop)
+	}
 	r.debugf("Pipeline created with mode=%s targetPID=%d minLatencyMs=%d",
 		mode, r.config.TargetPID, r.config.MinLatencyMs)
 
@@ -499,18 +518,23 @@ func (r *Runner) handleEvent(evt *event.S3Event) {
 	// Record Prometheus metrics
 	if r.metrics != nil {
 		labels := map[string]string{
-			"hostname":     r.hostname,
 			"comm":         evt.ClientType,
 			"s3_operation": string(evt.Operation),
-			"bucket":       evt.Bucket,
-			"endpoint":     evt.Endpoint,
+		}
+		for _, k := range r.optionalLabelKeys {
+			switch k {
+			case "bucket":
+				labels["bucket"] = evt.Bucket
+			case "endpoint":
+				labels["endpoint"] = evt.Endpoint
+			}
 		}
 
 		// Pre-fill every registered extra-label key so the call to
 		// CounterVec.With below never panics with cardinality mismatch.
 		// Events from PIDs not in targetLabels (startup race, non-target
-		// traffic that slips past isLikelyS3Event, or a target without its
-		// own prom_labels) get empty strings for the missing keys.
+		// traffic that slips past isLikelyS3Event, or a target without
+		// its own prom_labels) get empty strings for the missing keys.
 		r.mu.RLock()
 		perPID := r.targetLabels[evt.PID]
 		for _, k := range r.extraLabelKeys {
@@ -565,7 +589,7 @@ func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
 		return false
 	}
 	// Reject traffic to this machine (Prometheus, Grafana, health checks)
-	if isLocalEndpoint(evt.Endpoint, r.localAddrs) {
+	if r.isLocalEndpoint(evt.Endpoint) {
 		return false
 	}
 	// Without S3 markers, only trust requests to IP-addressed endpoints.
@@ -574,8 +598,35 @@ func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
 	return httputil.IsIPAddress(evt.Endpoint)
 }
 
-// collectLocalAddrs builds a set of all IPs and hostnames that identify this machine.
-func collectLocalAddrs(hostname string) map[string]bool {
+// validateOptionalLabels returns the subset of requested labels that are
+// known optional labels. Unknown values are logged and dropped so a typo
+// in the config file doesn't produce a mismatched Prometheus schema.
+func validateOptionalLabels(requested []string) []string {
+	if len(requested) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(requested))
+	out := make([]string, 0, len(requested))
+	for _, name := range requested {
+		if seen[name] {
+			continue
+		}
+		if !metrics.IsOptionalLabel(name) {
+			fmt.Fprintf(os.Stderr, "warning: metrics.labels: ignoring unknown label %q (valid: %v)\n",
+				name, metrics.OptionalLabels)
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+// collectLocalAddrsFast returns the set of self-identifying addresses that
+// can be gathered without hitting DNS: loopback, the resolved hostname, and
+// every interface IP. Reverse-DNS names are added later by
+// resolveLocalAddrsBackground so a slow resolver never delays startup.
+func collectLocalAddrsFast(hostname string) map[string]bool {
 	addrs := map[string]bool{
 		"127.0.0.1": true,
 		"::1":       true,
@@ -584,7 +635,6 @@ func collectLocalAddrs(hostname string) map[string]bool {
 	if hostname != "" {
 		addrs[hostname] = true
 	}
-	// Add all interface IPs
 	if ifaces, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range ifaces {
 			if ipNet, ok := a.(*net.IPNet); ok {
@@ -592,34 +642,47 @@ func collectLocalAddrs(hostname string) map[string]bool {
 			}
 		}
 	}
-	// Reverse-resolve local IPs to discover DNS names pointing to this machine
-	// (e.g., 10.143.11.203 → var203.selab.vastdata.com)
-	snapshot := make([]string, 0, len(addrs))
-	for a := range addrs {
-		snapshot = append(snapshot, a)
-	}
-	for _, ip := range snapshot {
-		if names, err := net.LookupAddr(ip); err == nil {
-			for _, name := range names {
-				name = strings.TrimSuffix(name, ".")
-				addrs[name] = true
-			}
-		}
-	}
 	return addrs
 }
 
-// isLocalEndpoint checks if an endpoint (host or host:port) belongs to this machine.
-// Uses net.SplitHostPort so IPv6 literals like "[::1]:9000", "::1", and
-// "fe80::1" are handled correctly — collectLocalAddrs stores unbracketed
-// forms, so a naive strings.LastIndex(":") split misses every IPv6 case.
-func isLocalEndpoint(endpoint string, localAddrs map[string]bool) bool {
+// resolveLocalAddrsBackground augments r.localAddrs with reverse-DNS names
+// for every local IP (e.g. 10.143.11.203 -> var203.selab.vastdata.com).
+// Called once from New in its own goroutine; safe to skip failures.
+func (r *Runner) resolveLocalAddrsBackground() {
+	r.localAddrsMu.RLock()
+	ips := make([]string, 0, len(r.localAddrs))
+	for a := range r.localAddrs {
+		ips = append(ips, a)
+	}
+	r.localAddrsMu.RUnlock()
+
+	for _, ip := range ips {
+		names, err := net.LookupAddr(ip)
+		if err != nil {
+			continue
+		}
+		r.localAddrsMu.Lock()
+		for _, name := range names {
+			r.localAddrs[strings.TrimSuffix(name, ".")] = true
+		}
+		r.localAddrsMu.Unlock()
+	}
+}
+
+// isLocalEndpoint checks if an endpoint (host or host:port) belongs to
+// this machine. Uses net.SplitHostPort so IPv6 literals like "[::1]:9000",
+// "::1", and "fe80::1" are handled correctly — collectLocalAddrsFast
+// stores unbracketed forms, so a naive strings.LastIndex(":") split
+// misses every IPv6 case.
+func (r *Runner) isLocalEndpoint(endpoint string) bool {
 	host := endpoint
 	if h, _, err := net.SplitHostPort(endpoint); err == nil {
 		host = h
 	}
 	host = strings.Trim(host, "[]")
-	return localAddrs[host]
+	r.localAddrsMu.RLock()
+	defer r.localAddrsMu.RUnlock()
+	return r.localAddrs[host]
 }
 
 // debugf prints a debug message if debug mode is enabled.

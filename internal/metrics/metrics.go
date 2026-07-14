@@ -19,14 +19,60 @@ type Metrics struct {
 	RequestBytesTotal   *prometheus.CounterVec
 	ResponseBytesTotal  *prometheus.CounterVec
 	ResponseStatusTotal *prometheus.CounterVec
+	EventsDroppedTotal  *prometheus.CounterVec
 }
 
-// DefaultLabels are the standard labels for all metrics.
-var DefaultLabels = []string{"hostname", "comm", "s3_operation", "bucket", "endpoint"}
+// DropReason values for the events_dropped_total metric.
+const (
+	// DropReasonPerfLost — the kernel ring buffer overflowed and lost
+	// samples before userspace could drain them.
+	DropReasonPerfLost = "perf_lost"
+	// DropReasonChannelFull — the userspace pipeline channel was full and
+	// the event was discarded rather than block the perf reader.
+	DropReasonChannelFull = "channel_full"
+)
+
+// CoreLabels are the always-on labels applied to every request metric.
+// Kept deliberately low-cardinality; anything unbounded goes in
+// OptionalLabels and must be enabled explicitly via metrics.labels.
+var CoreLabels = []string{"comm", "s3_operation"}
+
+// OptionalLabels are labels that Prometheus operators may opt into. They
+// are documented as high-cardinality and disabled by default.
+var OptionalLabels = []string{"bucket", "endpoint"}
+
+// IsOptionalLabel returns true if name is a recognised optional label.
+func IsOptionalLabel(name string) bool {
+	for _, l := range OptionalLabels {
+		if l == name {
+			return true
+		}
+	}
+	return false
+}
+
+// responseStatusLabels returns the label set for ResponseStatusTotal.
+// The metric is intentionally narrow (status_code only) so it stays
+// useful even when bucket is opted out; if bucket IS enabled we add it
+// to keep pre-existing bucket-scoped alerting queries working.
+func responseStatusLabels(optionalLabels []string) []string {
+	labels := []string{"status_code"}
+	for _, l := range optionalLabels {
+		if l == "bucket" {
+			labels = append(labels, "bucket")
+		}
+	}
+	return labels
+}
 
 // New creates a new Metrics instance with all counters/gauges/histograms.
-func New(extraLabels []string) *Metrics {
-	labels := append(DefaultLabels, extraLabels...)
+// The label set is CoreLabels + optionalLabels (which must be a subset
+// of OptionalLabels) + extraLabels (target-supplied prom_labels keys).
+func New(optionalLabels, extraLabels []string) *Metrics {
+	labels := make([]string, 0, len(CoreLabels)+len(optionalLabels)+len(extraLabels))
+	labels = append(labels, CoreLabels...)
+	labels = append(labels, optionalLabels...)
+	labels = append(labels, extraLabels...)
 
 	m := &Metrics{
 		RequestsTotal: prometheus.NewCounterVec(
@@ -68,9 +114,16 @@ func New(extraLabels []string) *Metrics {
 		ResponseStatusTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "s3slower_response_status_total",
-				Help: "Total S3 responses by bucket and HTTP status code",
+				Help: "Total S3 responses by HTTP status code (and bucket, if enabled)",
 			},
-			[]string{"bucket", "status_code"},
+			responseStatusLabels(optionalLabels),
+		),
+		EventsDroppedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "s3slower_events_dropped_total",
+				Help: "Total events dropped before reaching the exporter, by reason",
+			},
+			[]string{"reason"},
 		),
 	}
 
@@ -86,6 +139,7 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 		m.RequestBytesTotal,
 		m.ResponseBytesTotal,
 		m.ResponseStatusTotal,
+		m.EventsDroppedTotal,
 	}
 
 	for _, c := range collectors {
@@ -97,7 +151,18 @@ func (m *Metrics) Register(reg prometheus.Registerer) error {
 	return nil
 }
 
-// RecordRequest records a single S3 request.
+// RecordDrop increments the events_dropped_total counter for a reason.
+// Reasons should come from the DropReason* constants for stability.
+func (m *Metrics) RecordDrop(reason string, count uint64) {
+	if count == 0 {
+		return
+	}
+	m.EventsDroppedTotal.WithLabelValues(reason).Add(float64(count))
+}
+
+// RecordRequest records a single S3 request. The `labels` map must
+// contain every label the request vectors were registered with;
+// RecordRequest derives ResponseStatusTotal's narrower label set from it.
 func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, reqBytes, respBytes int64, isError bool, statusCode int) {
 	m.RequestsTotal.With(labels).Inc()
 	m.RequestDurationMs.With(labels).Observe(durationMs)
@@ -109,10 +174,11 @@ func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, re
 	}
 
 	if statusCode > 0 {
-		m.ResponseStatusTotal.With(prometheus.Labels{
-			"bucket":      labels["bucket"],
-			"status_code": strconv.Itoa(statusCode),
-		}).Inc()
+		statusLabels := prometheus.Labels{"status_code": strconv.Itoa(statusCode)}
+		if bucket, ok := labels["bucket"]; ok {
+			statusLabels["bucket"] = bucket
+		}
+		m.ResponseStatusTotal.With(statusLabels).Inc()
 	}
 }
 
@@ -125,9 +191,9 @@ type Exporter struct {
 }
 
 // NewExporter creates a new Prometheus exporter.
-func NewExporter(addr string, extraLabels []string) (*Exporter, error) {
+func NewExporter(addr string, optionalLabels, extraLabels []string) (*Exporter, error) {
 	reg := prometheus.NewRegistry()
-	metrics := New(extraLabels)
+	metrics := New(optionalLabels, extraLabels)
 	if err := metrics.Register(reg); err != nil {
 		return nil, fmt.Errorf("failed to register metrics: %w", err)
 	}

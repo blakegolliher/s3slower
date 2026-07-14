@@ -175,14 +175,6 @@ func (w *Writer) writeJSONEvent(e *event.S3Event) {
 	w.out.Write([]byte("\n"))
 }
 
-// Flush flushes any buffered output.
-func (w *Writer) Flush() error {
-	if f, ok := w.out.(*os.File); ok {
-		return f.Sync()
-	}
-	return nil
-}
-
 // abbreviateOp returns a shortened operation name for display.
 func abbreviateOp(op string) string {
 	switch op {

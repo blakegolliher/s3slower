@@ -27,26 +27,16 @@ type RotatingLogger struct {
 
 // Config holds logger configuration.
 type Config struct {
-	Dir        string // Log directory (default: /opt/s3slower)
-	Prefix     string // Log file prefix (default: s3slower)
-	MaxSizeMB  int    // Max size in MB before rotation (default: 100)
-	MaxBackups int    // Number of old logs to keep (default: 5)
-}
-
-// DefaultConfig returns default logger configuration.
-func DefaultConfig() Config {
-	return Config{
-		Dir:        "/opt/s3slower",
-		Prefix:     "s3slower",
-		MaxSizeMB:  100,
-		MaxBackups: 5,
-	}
+	Dir        string // Log directory
+	Prefix     string // Log file basename prefix
+	MaxSizeMB  int    // Max size in MB before rotation
+	MaxBackups int    // Number of old logs to keep
 }
 
 // NewRotatingLogger creates a new rotating logger.
 func NewRotatingLogger(cfg Config) (*RotatingLogger, error) {
 	if cfg.Dir == "" {
-		cfg.Dir = "/opt/s3slower"
+		cfg.Dir = "/var/log/s3slower"
 	}
 	if cfg.Prefix == "" {
 		cfg.Prefix = "s3slower"
@@ -78,28 +68,41 @@ func NewRotatingLogger(cfg Config) (*RotatingLogger, error) {
 	return l, nil
 }
 
-// openNewFile opens a new log file with timestamp.
+// openNewFile opens a new log file with a timestamp-based name. If a
+// same-second restart collides with an existing file that would already
+// exceed maxSize, a numeric suffix is appended so writes never resume
+// in an already-oversized file.
 func (l *RotatingLogger) openNewFile() error {
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	filename := fmt.Sprintf("%s_%s.log", l.prefix, timestamp)
-	path := filepath.Join(l.dir, filename)
+	basename := fmt.Sprintf("%s_%s", l.prefix, timestamp)
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open log file: %w", err)
+	for suffix := 0; suffix < 1000; suffix++ {
+		name := basename + ".log"
+		if suffix > 0 {
+			name = fmt.Sprintf("%s.%d.log", basename, suffix)
+		}
+		path := filepath.Join(l.dir, name)
+
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to open log file: %w", err)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return fmt.Errorf("failed to stat log file: %w", err)
+		}
+
+		if info.Size() >= l.maxSize {
+			f.Close()
+			continue
+		}
+
+		l.currentFile = f
+		l.currentSize = info.Size()
+		return nil
 	}
-
-	// Get current size
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return fmt.Errorf("failed to stat log file: %w", err)
-	}
-
-	l.currentFile = f
-	l.currentSize = info.Size()
-
-	return nil
+	return fmt.Errorf("failed to open log file: exhausted suffixes for %s", basename)
 }
 
 // rotate rotates the log file if needed.
@@ -200,7 +203,8 @@ func (l *RotatingLogger) WriteHeader() error {
 	)
 	separator := fmt.Sprintf("%s\n", strings.Repeat("-", 140))
 
-	_, err := l.currentFile.WriteString(header + separator)
+	n, err := l.currentFile.WriteString(header + separator)
+	l.currentSize += int64(n)
 	return err
 }
 
