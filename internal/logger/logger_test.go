@@ -13,16 +13,6 @@ import (
 	"github.com/s3slower/s3slower/internal/event"
 )
 
-// TestDefaultConfig tests the DefaultConfig function.
-func TestDefaultConfig(t *testing.T) {
-	cfg := DefaultConfig()
-
-	assert.Equal(t, "/opt/s3slower", cfg.Dir)
-	assert.Equal(t, "s3slower", cfg.Prefix)
-	assert.Equal(t, 100, cfg.MaxSizeMB)
-	assert.Equal(t, 5, cfg.MaxBackups)
-}
-
 // TestNewRotatingLogger tests creating a new logger.
 func TestNewRotatingLogger(t *testing.T) {
 	t.Run("creates_logger_with_defaults", func(t *testing.T) {

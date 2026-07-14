@@ -28,7 +28,6 @@ type Config struct {
 	Mode         string // http, openssl, gnutls, nss, auto
 	TargetPID    uint32
 	MinLatencyMs uint64
-	LibraryPath  string
 
 	// Output settings
 	EnableTerminal    bool
@@ -341,7 +340,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		Mode:         mode,
 		TargetPID:    r.config.TargetPID,
 		MinLatencyMs: r.config.MinLatencyMs,
-		LibraryPath:  r.config.LibraryPath,
 		BufferSize:   1000,
 		Debug:        r.config.Debug,
 	}

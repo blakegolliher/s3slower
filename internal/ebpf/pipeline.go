@@ -198,11 +198,9 @@ func (p *Pipeline) handleEvent(raw *RawEvent) {
 	// Convert raw event to S3Event
 	s3event := event.NewS3Event()
 
-	// Set basic fields
 	s3event.PID = raw.PID
 	s3event.TID = raw.TID
-	s3event.FD = int32(raw.FD)
-	s3event.Comm = CommToString(raw.Comm[:])
+	s3event.Comm = commToString(raw.Comm[:])
 	s3event.RequestSize = raw.ReqSize
 	s3event.ResponseSize = raw.RespSize
 

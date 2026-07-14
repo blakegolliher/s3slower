@@ -170,15 +170,6 @@ const (
 	MethodHEAD   HTTPMethod = "HEAD"
 )
 
-// IsS3Method checks if a method is valid for S3 operations.
-func IsS3Method(method string) bool {
-	switch HTTPMethod(method) {
-	case MethodGET, MethodPUT, MethodPOST, MethodDELETE, MethodHEAD:
-		return true
-	}
-	return false
-}
-
 // S3Operation represents an S3 operation type.
 type S3Operation string
 

@@ -335,31 +335,6 @@ func TestParseBucketEndpoint_Unicode(t *testing.T) {
 	assert.Equal(t, "s3.amazonaws.com", endpoint)
 }
 
-// TestIsS3Method tests the IsS3Method function.
-func TestIsS3Method(t *testing.T) {
-	tests := []struct {
-		method string
-		want   bool
-	}{
-		{"GET", true},
-		{"PUT", true},
-		{"POST", true},
-		{"DELETE", true},
-		{"HEAD", true},
-		{"PATCH", false},
-		{"OPTIONS", false},
-		{"CONNECT", false},
-		{"", false},
-		{"get", false}, // case-sensitive
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.method, func(t *testing.T) {
-			assert.Equal(t, tt.want, IsS3Method(tt.method))
-		})
-	}
-}
-
 // TestDetectS3Operation tests the DetectS3Operation function.
 func TestDetectS3Operation(t *testing.T) {
 	tests := []struct {
