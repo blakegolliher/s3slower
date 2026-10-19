@@ -112,11 +112,11 @@ Sample output (one line per request; ranged reads show the byte range):
 ```
 TIME         PROC       OP       STAT      BYTES   LAT(ms) BUCKET               ENDPOINT               KEY
 ----------------------------------------------------------------------------------------------------------------------------------
-21:16:11.293 boto3      PUT       200    1048576     59.99 s3action             main.selab-var204.sel~ s3slower-demo/table/epoch-0/data/shard-00000.tar
-21:16:11.569 boto3      MPU_PART  200    8388608     30.31 s3action             main.selab-var204.sel~ s3slower-demo/table/epoch-0/ckpt/step-000000.pt
-21:16:11.660 boto3      LIST_PFX  200          0      2.98 s3action             main.selab-var204.sel~ s3slower-demo/table/epoch-0/data/*
-21:16:11.673 boto3      GET_RNG   206      65536      2.32 s3action             main.selab-var204.sel~ s3slower-demo/table/epoch-0/data/shard-00013.tar [bytes=42450-107985]
-21:16:11.879 boto3      DEL_BULK  200       1604     19.89 s3action             main.selab-var204.sel~
+21:16:11.293 boto3      PUT       200    1048576     59.99 my-bucket            s3.example.com         datasets/train/epoch-0/data/shard-00000.tar
+21:16:11.569 boto3      MPU_PART  200    8388608     30.31 my-bucket            s3.example.com         datasets/train/epoch-0/ckpt/step-000000.pt
+21:16:11.660 boto3      LIST_PFX  200          0      2.98 my-bucket            s3.example.com         datasets/train/epoch-0/data/*
+21:16:11.673 boto3      GET_RNG   206      65536      2.32 my-bucket            s3.example.com         datasets/train/epoch-0/data/shard-00013.tar [bytes=42450-107985]
+21:16:11.879 boto3      DEL_BULK  200       1604     19.89 my-bucket            s3.example.com
 ```
 
 `--output top` replaces the scrolling list with a summary redrawn every second (last 5 seconds):
