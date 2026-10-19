@@ -20,6 +20,10 @@ type Metrics struct {
 	ResponseBytesTotal  *prometheus.CounterVec
 	ResponseStatusTotal *prometheus.CounterVec
 	EventsDroppedTotal  *prometheus.CounterVec
+
+	// statusHasBucket records whether ResponseStatusTotal carries the
+	// bucket label (only when bucket is an enabled optional label).
+	statusHasBucket bool
 }
 
 // DropReason values for the events_dropped_total metric.
@@ -32,6 +36,14 @@ const (
 	DropReasonChannelFull = "channel_full"
 )
 
+// LatencyBucketsMs are the request-duration histogram bounds. They start
+// below a millisecond so fast all-flash small-object latency gets real
+// resolution, and run to a minute for large multipart parts on slow links.
+var LatencyBucketsMs = []float64{
+	0.25, 0.5, 1, 2, 3, 5, 7.5, 10, 15, 25, 50, 75, 100,
+	250, 500, 1000, 2500, 5000, 10000, 30000, 60000,
+}
+
 // CoreLabels are the always-on labels applied to every request metric.
 // Kept deliberately low-cardinality; anything unbounded goes in
 // OptionalLabels and must be enabled explicitly via metrics.labels.
@@ -40,6 +52,17 @@ var CoreLabels = []string{"comm", "s3_operation"}
 // OptionalLabels are labels that Prometheus operators may opt into. They
 // are documented as high-cardinality and disabled by default.
 var OptionalLabels = []string{"bucket", "endpoint"}
+
+// IsReservedLabel reports whether name is used by s3slower's own metrics
+// (core, optional or status labels) and so cannot be a target prom_label.
+func IsReservedLabel(name string) bool {
+	for _, l := range CoreLabels {
+		if l == name {
+			return true
+		}
+	}
+	return name == "status_code" || IsOptionalLabel(name)
+}
 
 // IsOptionalLabel returns true if name is a recognised optional label.
 func IsOptionalLabel(name string) bool {
@@ -52,11 +75,11 @@ func IsOptionalLabel(name string) bool {
 }
 
 // responseStatusLabels returns the label set for ResponseStatusTotal.
-// The metric is intentionally narrow (status_code only) so it stays
-// useful even when bucket is opted out; if bucket IS enabled we add it
-// to keep pre-existing bucket-scoped alerting queries working.
+// The metric is intentionally narrow (status_code and s3_operation) so it
+// stays cheap even when bucket is opted out; if bucket IS enabled we add
+// it to keep pre-existing bucket-scoped alerting queries working.
 func responseStatusLabels(optionalLabels []string) []string {
-	labels := []string{"status_code"}
+	labels := []string{"status_code", "s3_operation"}
 	for _, l := range optionalLabels {
 		if l == "bucket" {
 			labels = append(labels, "bucket")
@@ -69,6 +92,7 @@ func responseStatusLabels(optionalLabels []string) []string {
 // The label set is CoreLabels + optionalLabels (which must be a subset
 // of OptionalLabels) + extraLabels (target-supplied prom_labels keys).
 func New(optionalLabels, extraLabels []string) *Metrics {
+	statusLabels := responseStatusLabels(optionalLabels)
 	labels := make([]string, 0, len(CoreLabels)+len(optionalLabels)+len(extraLabels))
 	labels = append(labels, CoreLabels...)
 	labels = append(labels, optionalLabels...)
@@ -93,7 +117,7 @@ func New(optionalLabels, extraLabels []string) *Metrics {
 			prometheus.HistogramOpts{
 				Name:    "s3slower_request_duration_ms",
 				Help:    "Request duration in milliseconds",
-				Buckets: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
+				Buckets: LatencyBucketsMs,
 			},
 			labels,
 		),
@@ -114,9 +138,9 @@ func New(optionalLabels, extraLabels []string) *Metrics {
 		ResponseStatusTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "s3slower_response_status_total",
-				Help: "Total S3 responses by HTTP status code (and bucket, if enabled)",
+				Help: "Total S3 responses by HTTP status code and operation (and bucket, if enabled)",
 			},
-			responseStatusLabels(optionalLabels),
+			statusLabels,
 		),
 		EventsDroppedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -125,6 +149,7 @@ func New(optionalLabels, extraLabels []string) *Metrics {
 			},
 			[]string{"reason"},
 		),
+		statusHasBucket: len(statusLabels) > 2,
 	}
 
 	return m
@@ -174,9 +199,12 @@ func (m *Metrics) RecordRequest(labels prometheus.Labels, durationMs float64, re
 	}
 
 	if statusCode > 0 {
-		statusLabels := prometheus.Labels{"status_code": strconv.Itoa(statusCode)}
-		if bucket, ok := labels["bucket"]; ok {
-			statusLabels["bucket"] = bucket
+		statusLabels := prometheus.Labels{
+			"status_code":  strconv.Itoa(statusCode),
+			"s3_operation": labels["s3_operation"],
+		}
+		if m.statusHasBucket {
+			statusLabels["bucket"] = labels["bucket"]
 		}
 		m.ResponseStatusTotal.With(statusLabels).Inc()
 	}

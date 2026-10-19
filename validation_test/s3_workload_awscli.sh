@@ -109,7 +109,7 @@ echo "  [8/19] list-objects-v2 --prefix: exit=$ec" >&2
 # 9. copy-object (copy = PUT internally)
 result=$(run_s3api copy-object --bucket "$BUCKET" --key "test/copy.txt" --copy-source "$BUCKET/test/small.txt" 2>/dev/null)
 pid=${result%%:*}; ec=${result##*:}
-log_op "$pid" "PUT_OBJECT" "PUT" "test/copy.txt" 0 "$ec"
+log_op "$pid" "COPY_OBJECT" "PUT" "test/copy.txt" 0 "$ec"
 echo "  [9/19] copy-object: exit=$ec" >&2
 
 # 10. delete-object

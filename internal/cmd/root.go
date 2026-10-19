@@ -75,6 +75,7 @@ func newRunCommand() *cobra.Command {
 		noLog        bool
 		debug        bool
 		outputFormat string
+		perfBufferKB int
 	)
 
 	cmd := &cobra.Command{
@@ -149,6 +150,11 @@ to enable metrics collection.`,
 
 			// Apply CLI flags (override config file)
 			if cmd.Flags().Changed("output") {
+				switch outputFormat {
+				case "table", "simple", "json", "top":
+				default:
+					return fmt.Errorf("invalid --output %q (valid: table, simple, json, top)", outputFormat)
+				}
 				cfg.OutputFormat = outputFormat
 			}
 			if cmd.Flags().Changed("mode") {
@@ -178,6 +184,7 @@ to enable metrics collection.`,
 			if cmd.Flags().Changed("debug") {
 				cfg.Debug = debug
 			}
+			cfg.PerfBufferKB = perfBufferKB
 
 			// Logging settings
 			if noLog {
@@ -216,12 +223,13 @@ to enable metrics collection.`,
 	cmd.Flags().Uint64Var(&minLatency, "min-latency", 0, "Minimum latency in ms to report")
 	cmd.Flags().StringVar(&mode, "mode", "auto", "Probe mode: auto, http, openssl, gnutls, nss, s2n, gotls")
 	cmd.Flags().StringVar(&libraryPath, "library", "", "Path to TLS library or Go binary (for gotls/openssl/gnutls/nss/s2n modes)")
-	cmd.Flags().StringSliceVar(&watchProcs, "watch", nil, "Process names to watch (e.g., mc,warp)")
+	cmd.Flags().StringSliceVar(&watchProcs, "watch", nil, "Only report these process names or client labels (e.g., python3,aws,boto3)")
 	cmd.Flags().StringVar(&logDir, "log-dir", "/var/log/s3slower", "Log directory")
 	cmd.Flags().IntVar(&logMaxSizeMB, "log-max-size", 100, "Max log size in MB before rotation")
 	cmd.Flags().BoolVar(&noLog, "no-log", false, "Disable file logging")
 	cmd.Flags().BoolVar(&debug, "debug", false, "Enable debug output")
-	cmd.Flags().StringVar(&outputFormat, "output", "table", "Output format: table, simple, json")
+	cmd.Flags().StringVar(&outputFormat, "output", "table", "Output format: table, simple, json, top (live per-operation summary)")
+	cmd.Flags().IntVar(&perfBufferKB, "perf-buffer-kb", ebpf.DefaultPerfBufferKB, "Per-CPU perf ring size in KB (raise if s3slower_events_dropped_total grows)")
 
 	return cmd
 }
@@ -233,6 +241,7 @@ func newAttachCommand() *cobra.Command {
 		minLatency uint64
 		logDir     string
 		noLog      bool
+		perfBufKB  int
 	)
 
 	cmd := &cobra.Command{
@@ -255,6 +264,7 @@ The tracer will automatically detect the TLS library used.`,
 			cfg.TargetPID = uint32(pid)
 			cfg.MinLatencyMs = minLatency
 			cfg.EnablePrometheus = false
+			cfg.PerfBufferKB = perfBufKB
 
 			if noLog {
 				cfg.EnableLogging = false
@@ -278,6 +288,7 @@ The tracer will automatically detect the TLS library used.`,
 	cmd.Flags().Uint64Var(&minLatency, "min-latency", 0, "Minimum latency in ms to report")
 	cmd.Flags().StringVar(&logDir, "log-dir", "/var/log/s3slower", "Log directory")
 	cmd.Flags().BoolVar(&noLog, "no-log", false, "Disable file logging")
+	cmd.Flags().IntVar(&perfBufKB, "perf-buffer-kb", ebpf.DefaultPerfBufferKB, "Per-CPU perf ring size in KB")
 
 	return cmd
 }

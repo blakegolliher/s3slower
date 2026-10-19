@@ -103,12 +103,16 @@ func TestWriteEvent(t *testing.T) {
 
 		evt := &event.S3Event{
 			Timestamp:    time.Now(),
+			ClientType:   "boto3",
 			Method:       "GET",
+			Operation:    "GET_OBJECT_RANGE",
+			StatusCode:   206,
 			Bucket:       "my-bucket",
 			Endpoint:     "s3.amazonaws.com",
 			ResponseSize: 1024,
 			LatencyMs:    45.5,
 			Path:         "/my-bucket/data/file.json",
+			Range:        "bytes=0-1023",
 		}
 
 		err = logger.WriteEvent(evt)
@@ -130,7 +134,10 @@ func TestWriteEvent(t *testing.T) {
 		assert.Contains(t, string(content), "s3.amazonaws.com")
 		assert.Contains(t, string(content), "1024")
 		assert.Contains(t, string(content), "45.5")
-		assert.Contains(t, string(content), "/my-bucket/data/file.json")
+		assert.Contains(t, string(content), "/my-bucket/data/file.json [bytes=0-1023]")
+		assert.Contains(t, string(content), "GET_OBJECT_RANGE")
+		assert.Contains(t, string(content), "206")
+		assert.Contains(t, string(content), "boto3")
 	})
 
 	t.Run("writes_multiple_events", func(t *testing.T) {
@@ -151,7 +158,7 @@ func TestWriteEvent(t *testing.T) {
 				Timestamp:    time.Now(),
 				Method:       "PUT",
 				Bucket:       "bucket",
-				ResponseSize: uint32(i * 100),
+				ResponseSize: uint64(i * 100),
 				LatencyMs:    float64(i) * 10.0,
 				Path:         "/bucket/key",
 			}
@@ -207,6 +214,8 @@ func TestWriteHeader(t *testing.T) {
 
 	assert.Contains(t, string(content), "TIMESTAMP")
 	assert.Contains(t, string(content), "METHOD")
+	assert.Contains(t, string(content), "OPERATION")
+	assert.Contains(t, string(content), "STAT")
 	assert.Contains(t, string(content), "BUCKET")
 	assert.Contains(t, string(content), "ENDPOINT")
 	assert.Contains(t, string(content), "BYTES")
@@ -406,7 +415,7 @@ func TestConcurrentWrites(t *testing.T) {
 					Timestamp:    time.Now(),
 					Method:       "GET",
 					Bucket:       "bucket",
-					ResponseSize: uint32(id * 100),
+					ResponseSize: uint64(id * 100),
 					LatencyMs:    float64(j),
 					Path:         "/bucket/key",
 				}

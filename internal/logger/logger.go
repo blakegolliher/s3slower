@@ -174,16 +174,39 @@ func (l *RotatingLogger) WriteEvent(e *event.S3Event) error {
 	return nil
 }
 
+// logLineFormat is shared by the header and event lines so they align.
+const logLineFormat = "%s | %-10s | %-16s | %4s | %-6s | %-40s | %-30s | %10v | %10v | %s\n"
+
 // formatEvent formats an event for the log file (with full key).
 func (l *RotatingLogger) formatEvent(e *event.S3Event) string {
-	return fmt.Sprintf("%s | %-6s | %-40s | %-30s | %10d | %10.2f | %s\n",
+	status := "-"
+	if e.StatusCode > 0 {
+		status = fmt.Sprintf("%d", e.StatusCode)
+	}
+	proc := e.ClientType
+	if proc == "" {
+		proc = e.Comm
+	}
+	// Uploads report the request body; everything else the response body.
+	bytes := e.ResponseSize
+	if (e.Method == "PUT" || e.Method == "POST") && e.RequestSize > 0 {
+		bytes = e.RequestSize
+	}
+	key := e.Path // Full key/path in log
+	if e.Range != "" {
+		key += " [" + e.Range + "]"
+	}
+	return fmt.Sprintf(logLineFormat,
 		e.Timestamp.Format("2006-01-02 15:04:05.000"),
+		truncateLog(proc, 10),
+		string(e.Operation),
+		status,
 		e.Method,
 		truncateLog(e.Bucket, 40),
 		truncateLog(e.Endpoint, 30),
-		e.ResponseSize,
-		e.LatencyMs,
-		e.Path, // Full key/path in log
+		bytes,
+		fmt.Sprintf("%.2f", e.LatencyMs),
+		key,
 	)
 }
 
@@ -192,8 +215,11 @@ func (l *RotatingLogger) WriteHeader() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	header := fmt.Sprintf("%s | %-6s | %-40s | %-30s | %10s | %10s | %s\n",
+	header := fmt.Sprintf(logLineFormat,
 		"TIMESTAMP              ",
+		"PROC",
+		"OPERATION",
+		"STAT",
 		"METHOD",
 		"BUCKET",
 		"ENDPOINT",
@@ -201,7 +227,7 @@ func (l *RotatingLogger) WriteHeader() error {
 		"LATENCY_MS",
 		"KEY",
 	)
-	separator := fmt.Sprintf("%s\n", strings.Repeat("-", 140))
+	separator := fmt.Sprintf("%s\n", strings.Repeat("-", 170))
 
 	n, err := l.currentFile.WriteString(header + separator)
 	l.currentSize += int64(n)

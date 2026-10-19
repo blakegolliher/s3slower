@@ -4,7 +4,9 @@ package ebpf
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/s3slower/s3slower/internal/event"
 )
@@ -38,7 +40,22 @@ type Pipeline struct {
 	// attachedGoTLS tracks binaries with uprobes successfully attached.
 	checkedGoTLS  map[string]bool
 	attachedGoTLS map[string]bool
+
+	// procNames caches PID -> process name for client labels.
+	procMu    sync.Mutex
+	procNames map[uint32]procName
 }
+
+// procName is a cached /proc/<pid>/comm lookup.
+type procName struct {
+	name string
+	at   time.Time
+}
+
+const (
+	procNameTTL      = 30 * time.Second
+	procNameCacheMax = 4096
+)
 
 // SetDropCallback registers a callback invoked on every dropped event.
 // The callback runs on the perf-reader goroutine and must not block.
@@ -63,6 +80,10 @@ type PipelineConfig struct {
 	LibraryPath  string
 	BufferSize   int
 	Debug        bool
+
+	// PerfBufferKB is the per-CPU perf ring size; <= 0 uses
+	// DefaultPerfBufferKB.
+	PerfBufferKB int
 }
 
 const defaultBufferSize = 100
@@ -74,6 +95,7 @@ func NewPipeline(config PipelineConfig) (*Pipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tracer: %w", err)
 	}
+	tracer.SetPerfBufferKB(config.PerfBufferKB)
 	return newPipeline(tracer, NewLibraryFinder(), config), nil
 }
 
@@ -226,20 +248,19 @@ func (p *Pipeline) handleEvent(raw *RawEvent) {
 	s3event.PID = raw.PID
 	s3event.TID = raw.TID
 	s3event.Comm = commToString(raw.Comm[:])
-	s3event.RequestSize = raw.ReqSize
-	s3event.ResponseSize = raw.RespSize
+	s3event.Process = p.processName(raw.PID, s3event.Comm)
+	s3event.ClientType = clientName(s3event.Process, s3event.Comm)
+	s3event.RequestSize = uint64(raw.ReqSize)
+	s3event.ResponseSize = uint64(raw.RespSize)
 
 	// Set latency
 	s3event.SetLatency(raw.LatencyUs)
 
-	// Parse HTTP data
-	s3event.ParseFromRaw(raw.Data[:])
-
-	// Parse response status code from response data
-	s3event.ParseStatusCode(raw.RespData[:])
-
-	// Set client type
-	s3event.ClientType = clientTypeToString(raw.ClientType)
+	// The BPF program copies only the bytes each call transferred, so
+	// parse just those; the rest of each buffer is stale scratch space.
+	s3event.ParseFromRaw(raw.Data[:min(int(raw.ReqSize), len(raw.Data))])
+	s3event.ParseStatusCode(raw.RespData[:min(int(raw.RespSize), len(raw.RespData))],
+		raw.EarlyResp[:min(int(raw.EarlyLen), len(raw.EarlyResp))])
 
 	// Send to processor (non-blocking). If the buffer is full we drop and
 	// account for it so the drop is observable, not silent.
@@ -250,22 +271,66 @@ func (p *Pipeline) handleEvent(raw *RawEvent) {
 	}
 }
 
-// clientTypeToString converts a client type constant to a string.
-func clientTypeToString(ct uint8) string {
-	switch ct {
-	case ClientWarp:
-		return "warp"
-	case ClientElbencho:
-		return "elbencho"
-	case ClientBoto3:
-		return "boto3"
-	case ClientS3cmd:
-		return "s3cmd"
-	case ClientAWSCLI:
-		return "awscli"
-	default:
-		return "unknown"
+// processName returns the name of process pid (its main thread's comm),
+// falling back to the event's thread name if the process is gone. The BPF
+// program records the calling thread's name, and multi-threaded clients
+// name their threads (Java "pool-1-thread-7", elbencho "elb-wrk-3"); using
+// those as the client label would add one series per thread.
+func (p *Pipeline) processName(pid uint32, threadComm string) string {
+	now := time.Now()
+	p.procMu.Lock()
+	defer p.procMu.Unlock()
+	if c, ok := p.procNames[pid]; ok && now.Sub(c.at) < procNameTTL {
+		return c.name
 	}
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	if err != nil {
+		return threadComm
+	}
+	name := strings.TrimSpace(string(b))
+	if p.procNames == nil || len(p.procNames) >= procNameCacheMax {
+		p.procNames = make(map[uint32]procName)
+	}
+	p.procNames[pid] = procName{name: name, at: now}
+	return name
+}
+
+// clientName returns the client label for an event: the well-known tool
+// name when the process or thread name identifies one, otherwise the
+// process name itself so unrecognised clients (java, s5cmd, rclone, ...)
+// stay distinguishable instead of collapsing into "unknown". The process
+// name is checked first because clients may name their threads.
+func clientName(process, thread string) string {
+	if c := knownClient(process); c != "" {
+		return c
+	}
+	if c := knownClient(thread); c != "" {
+		return c
+	}
+	if process != "" {
+		return process
+	}
+	return "unknown"
+}
+
+// knownClient maps a process or thread name to a well-known S3 client,
+// using the same prefixes as the BPF program's detect_client_type.
+func knownClient(name string) string {
+	switch {
+	case strings.HasPrefix(name, "warp"):
+		return "warp"
+	case strings.HasPrefix(name, "elb"):
+		return "elbencho"
+	case strings.HasPrefix(name, "pyt"):
+		return "boto3"
+	case strings.HasPrefix(name, "s3c"):
+		return "s3cmd"
+	case strings.HasPrefix(name, "aws"):
+		return "awscli"
+	case name == "mc":
+		return "mc"
+	}
+	return ""
 }
 
 // Stop stops the pipeline.
@@ -368,7 +433,7 @@ func (p *Pipeline) onExec(pid uint32) {
 	}
 
 	p.debugf("Discovered Go TLS binary: %s (PID %d)", resolved, pid)
-	if err := p.tracer.AttachGoTLSUprobes(resolved, analysis.retOffsets); err != nil {
+	if err := p.tracer.AttachGoTLSUprobes(resolved, analysis.offsets); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to attach Go TLS uprobes to %s: %v\n", resolved, err)
 		return
 	}
@@ -393,7 +458,7 @@ func (p *Pipeline) scanGoTLS() {
 			continue
 		}
 		p.debugf("Found Go TLS binary: %s", binPath)
-		if err := p.tracer.AttachGoTLSUprobes(binPath, analysis.retOffsets); err != nil {
+		if err := p.tracer.AttachGoTLSUprobes(binPath, analysis.offsets); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to attach Go TLS uprobes to %s: %v\n", binPath, err)
 			continue
 		}

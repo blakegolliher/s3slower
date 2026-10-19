@@ -117,7 +117,7 @@ def main():
               lambda: client.list_objects_v2(Bucket=bucket, Prefix="test/"))
 
         # 9. copy-object (PUT internally)
-        do_op("copy-object", "PUT_OBJECT", "PUT", "test/copy.txt", 0,
+        do_op("copy-object", "COPY_OBJECT", "PUT", "test/copy.txt", 0,
               lambda: client.copy_object(
                   Bucket=bucket, Key="test/copy.txt",
                   CopySource=f"{bucket}/test/small.txt"))

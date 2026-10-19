@@ -3,6 +3,7 @@ package ebpf
 
 import (
 	"debug/elf"
+	"debug/gosym"
 	"errors"
 	"fmt"
 	"os"
@@ -120,7 +121,7 @@ func (f *DefaultLibraryFinder) FindGoTLS() []string {
 		if path == "" {
 			continue
 		}
-		if hasGoTLSSymbols(path) {
+		if hasGoTLS(path) {
 			results = append(results, path)
 			seen[path] = true
 		}
@@ -147,7 +148,7 @@ func (f *DefaultLibraryFinder) FindGoTLS() []string {
 		if seen[resolved] {
 			continue
 		}
-		if hasGoTLSSymbols(resolved) {
+		if hasGoTLS(resolved) {
 			results = append(results, resolved)
 			seen[resolved] = true
 		}
@@ -156,19 +157,82 @@ func (f *DefaultLibraryFinder) FindGoTLS() []string {
 	return results
 }
 
+// Go crypto/tls functions the Go TLS probes attach to.
+const (
+	goTLSWrite = "crypto/tls.(*Conn).Write"
+	goTLSRead  = "crypto/tls.(*Conn).Read"
+)
+
 // goTLSAnalysis holds the results of analyzing a Go binary for crypto/tls.
 type goTLSAnalysis struct {
-	isGo       bool
-	hasTLS     bool
-	retOffsets []uint64
+	isGo    bool
+	hasTLS  bool
+	offsets GoTLSOffsets
+}
+
+// funcRange is a function's virtual address range [start, end).
+type funcRange struct{ start, end uint64 }
+
+// goFuncRanges finds the named functions in a Go binary: from the ELF
+// symbol table when present, otherwise from .gopclntab, which the Go
+// runtime needs and so keeps even in stripped binaries. Most release
+// builds (mc, s5cmd, rclone, warp) are stripped with -ldflags "-s -w".
+func goFuncRanges(f *elf.File, names ...string) map[string]funcRange {
+	out := make(map[string]funcRange, len(names))
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	if syms, err := f.Symbols(); err == nil {
+		for _, s := range syms {
+			if want[s.Name] && s.Value != 0 && s.Size > 0 {
+				out[s.Name] = funcRange{s.Value, s.Value + s.Size}
+			}
+		}
+	}
+	if len(out) == len(names) {
+		return out
+	}
+
+	pclntab, text := f.Section(".gopclntab"), f.Section(".text")
+	if pclntab == nil || text == nil {
+		return out
+	}
+	data, err := pclntab.Data()
+	if err != nil {
+		return out
+	}
+	table, err := gosym.NewTable(nil, gosym.NewLineTable(data, text.Addr))
+	if err != nil {
+		return out
+	}
+	for _, n := range names {
+		if _, ok := out[n]; ok {
+			continue
+		}
+		if fn := table.LookupFunc(n); fn != nil && fn.End > fn.Entry {
+			out[n] = funcRange{fn.Entry, fn.End}
+		}
+	}
+	return out
+}
+
+// fileOffset converts a virtual address in an executable segment to the
+// file offset uprobes attach at.
+func fileOffset(f *elf.File, vaddr uint64) (uint64, bool) {
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_LOAD && p.Flags&elf.PF_X != 0 && p.Vaddr <= vaddr && vaddr < p.Vaddr+p.Memsz {
+			return vaddr - p.Vaddr + p.Off, true
+		}
+	}
+	return 0, false
 }
 
 // analyzeGoTLSBinary opens an ELF binary once and determines whether it
-// is a Go binary using crypto/tls, and if so, finds the RET instruction
-// offsets in crypto/tls.(*Conn).Read for uprobe-at-RET attachment.
-// This replaces the separate isGoBinary + hasGoTLSSymbols + findRetOffsets
-// calls, cutting discovery time from ~40ms (3 ELF opens + objdump fork)
-// to ~5ms (single ELF open + in-process decode).
+// is a Go binary using crypto/tls. If so, it returns the file offsets of
+// crypto/tls.(*Conn).Write and Read and of each RET instruction in Read
+// (for uprobe-at-RET attachment), resolved by goFuncRanges so stripped
+// binaries work too.
 func analyzeGoTLSBinary(path string) (*goTLSAnalysis, error) {
 	f, err := elf.Open(path)
 	if err != nil {
@@ -181,45 +245,11 @@ func analyzeGoTLSBinary(path string) (*goTLSAnalysis, error) {
 		return &goTLSAnalysis{}, nil
 	}
 
-	syms, err := f.Symbols()
-	if err != nil {
+	ranges := goFuncRanges(f, goTLSWrite, goTLSRead)
+	write, okWrite := ranges[goTLSWrite]
+	read, okRead := ranges[goTLSRead]
+	if !okWrite || !okRead {
 		return &goTLSAnalysis{isGo: true}, nil
-	}
-
-	// Scan for crypto/tls symbols and record Read's address/size.
-	var hasWrite, hasRead bool
-	var readAddr, readSize uint64
-	for _, s := range syms {
-		switch s.Name {
-		case "crypto/tls.(*Conn).Write":
-			hasWrite = true
-		case "crypto/tls.(*Conn).Read":
-			hasRead = true
-			readAddr = s.Value
-			readSize = s.Size
-		}
-		if hasWrite && hasRead {
-			break
-		}
-	}
-
-	if !hasWrite || !hasRead {
-		return &goTLSAnalysis{isGo: true}, nil
-	}
-
-	// If size is 0, estimate from next symbol.
-	if readSize == 0 {
-		nextAddr := uint64(0)
-		for _, s := range syms {
-			if s.Value > readAddr && (nextAddr == 0 || s.Value < nextAddr) {
-				nextAddr = s.Value
-			}
-		}
-		if nextAddr > readAddr {
-			readSize = nextAddr - readAddr
-		} else {
-			return nil, fmt.Errorf("cannot determine size of crypto/tls.(*Conn).Read")
-		}
 	}
 
 	// Read just the function bytes from .text (not the whole section).
@@ -227,12 +257,11 @@ func analyzeGoTLSBinary(path string) (*goTLSAnalysis, error) {
 	if text == nil {
 		return nil, fmt.Errorf(".text section not found")
 	}
-	if readAddr < text.Addr {
-		return nil, fmt.Errorf("symbol address before .text start")
+	if read.start < text.Addr {
+		return nil, fmt.Errorf("%s address before .text start", goTLSRead)
 	}
-	funcOffset := int64(readAddr - text.Addr)
-	code := make([]byte, readSize)
-	n, err := text.ReadAt(code, funcOffset)
+	code := make([]byte, read.end-read.start)
+	n, err := text.ReadAt(code, int64(read.start-text.Addr))
 	if err != nil && n == 0 {
 		return nil, fmt.Errorf("failed to read function bytes: %w", err)
 	}
@@ -251,23 +280,35 @@ func analyzeGoTLSBinary(path string) (*goTLSAnalysis, error) {
 		}
 		pos += insnLen
 	}
-
 	if len(retOffsets) == 0 {
-		return nil, fmt.Errorf("no RET instructions found in crypto/tls.(*Conn).Read")
+		return nil, fmt.Errorf("no RET instructions found in %s", goTLSRead)
+	}
+
+	writeOff, ok1 := fileOffset(f, write.start)
+	readOff, ok2 := fileOffset(f, read.start)
+	if !ok1 || !ok2 {
+		return nil, fmt.Errorf("crypto/tls functions outside executable segments")
 	}
 
 	return &goTLSAnalysis{
-		isGo:       true,
-		hasTLS:     true,
-		retOffsets: retOffsets,
+		isGo:    true,
+		hasTLS:  true,
+		offsets: GoTLSOffsets{Write: writeOff, Read: readOff, ReadRets: retOffsets},
 	}, nil
 }
 
-// hasGoTLSSymbols checks whether an ELF binary contains Go crypto/tls
-// symbols (crypto/tls.(*Conn).Write and Read), indicating a Go program
-// that uses the built-in TLS package.
-func hasGoTLSSymbols(path string) bool {
-	return hasDefinedSymbols(path, false, "crypto/tls.(*Conn).Write", "crypto/tls.(*Conn).Read")
+// hasGoTLS reports whether the ELF binary at path is a Go program that
+// contains crypto/tls.(*Conn).Write and Read, stripped or not.
+func hasGoTLS(path string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if f.Section(".gopclntab") == nil {
+		return false
+	}
+	return len(goFuncRanges(f, goTLSWrite, goTLSRead)) == 2
 }
 
 // hasDefinedSymbols reports whether the ELF file at path defines (Value != 0)

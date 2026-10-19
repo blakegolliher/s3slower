@@ -2,7 +2,6 @@
 package ebpf
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -42,10 +41,27 @@ type BPFTracer struct {
 	targetPID    uint32
 	minLatencyUs uint64
 
+	// perfBufferBytes is the per-CPU size of the events perf ring.
+	// Zero means DefaultPerfBufferKB.
+	perfBufferBytes int
+
 	attachTime    time.Time
 	eventsRecv    uint64
 	eventsDrop    uint64
 	lastEventTime time.Time
+}
+
+// DefaultPerfBufferKB is the default per-CPU size of the events perf ring.
+// Each event is ~1.9 KB, so 256 KB holds ~140 in-flight events per CPU.
+const DefaultPerfBufferKB = 256
+
+// SetPerfBufferKB sets the per-CPU perf ring size used by Start. Values
+// <= 0 select DefaultPerfBufferKB. The kernel rounds the size up to a
+// power-of-two number of pages.
+func (t *BPFTracer) SetPerfBufferKB(kb int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.perfBufferBytes = kb * 1024
 }
 
 // NewBPFTracer creates a new BPF tracer from embedded BPF program.
@@ -338,7 +354,7 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 		if err != nil || !analysis.hasTLS {
 			return fmt.Errorf("binary %s does not have Go TLS symbols", libraryPath)
 		}
-		return t.AttachGoTLSUprobes(libraryPath, analysis.retOffsets)
+		return t.AttachGoTLSUprobes(libraryPath, analysis.offsets)
 	default:
 		return fmt.Errorf("unsupported probe mode: %s", mode)
 	}
@@ -368,11 +384,12 @@ func (t *BPFTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 	return nil
 }
 
-// AttachGoTLSUprobes attaches Go crypto/tls uprobes with pre-computed
-// RET offsets. Uretprobes crash Go programs (goroutine stack copying
-// corrupts the trampoline), so we attach regular uprobes at each RET
-// instruction within crypto/tls.(*Conn).Read instead.
-func (t *BPFTracer) AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint64) error {
+// AttachGoTLSUprobes attaches Go crypto/tls uprobes at pre-computed file
+// offsets, so stripped binaries (no ELF symbol table) work. Uretprobes
+// crash Go programs (goroutine stack copying corrupts the trampoline), so
+// regular uprobes go on each RET instruction of crypto/tls.(*Conn).Read
+// instead.
+func (t *BPFTracer) AttachGoTLSUprobes(binaryPath string, offs GoTLSOffsets) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -392,16 +409,17 @@ func (t *BPFTracer) AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint6
 	// Entry probes for Write and Read.
 	entryProbes := []struct {
 		symbol, program string
+		offset          uint64
 	}{
-		{"crypto/tls.(*Conn).Write", "uprobe_go_tls_write"},
-		{"crypto/tls.(*Conn).Read", "uprobe_go_tls_read"},
+		{goTLSWrite, "uprobe_go_tls_write", offs.Write},
+		{goTLSRead, "uprobe_go_tls_read", offs.Read},
 	}
 	for _, p := range entryProbes {
 		prog, ok := t.collection.Programs[p.program]
 		if !ok {
 			return fmt.Errorf("program %s not found", p.program)
 		}
-		l, err := ex.Uprobe(p.symbol, prog, nil)
+		l, err := ex.Uprobe(p.symbol, prog, &link.UprobeOptions{Address: p.offset})
 		if err != nil {
 			return fmt.Errorf("failed to attach uprobe %s: %w", p.symbol, err)
 		}
@@ -413,8 +431,8 @@ func (t *BPFTracer) AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint6
 	if !ok {
 		return errors.New("uretprobe_go_tls_read program not found")
 	}
-	for _, offset := range readRetOffsets {
-		l, err := ex.Uprobe("crypto/tls.(*Conn).Read", retProg, &link.UprobeOptions{Offset: offset})
+	for _, ret := range offs.ReadRets {
+		l, err := ex.Uprobe(goTLSRead, retProg, &link.UprobeOptions{Address: offs.Read, Offset: ret})
 		if err != nil {
 			continue
 		}
@@ -457,7 +475,11 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 	}
 
 	// Create perf reader
-	reader, err := perf.NewReader(eventsMap, os.Getpagesize()*16)
+	perCPU := t.perfBufferBytes
+	if perCPU <= 0 {
+		perCPU = DefaultPerfBufferKB * 1024
+	}
+	reader, err := perf.NewReader(eventsMap, perCPU)
 	if err != nil {
 		t.mu.Unlock()
 		return fmt.Errorf("failed to create perf reader: %w", err)
@@ -484,8 +506,10 @@ func (t *BPFTracer) readEvents() {
 	defer t.wg.Done()
 	const readErrBackoff = 100 * time.Millisecond
 
+	// ReadInto reuses one sample buffer; parseRawEvent copies out of it.
+	var record perf.Record
 	for {
-		record, err := t.reader.Read()
+		err := t.reader.ReadInto(&record)
 		if err != nil {
 			if errors.Is(err, perf.ErrClosed) {
 				return
@@ -527,20 +551,39 @@ func (t *BPFTracer) readEvents() {
 	}
 }
 
-// parseRawEvent parses a raw event from the perf buffer.
+// rawEventWireSize is the number of meaningful bytes in a perf sample:
+// struct event_t up to the end of early_resp (the C struct's tail padding
+// is not needed).
+var rawEventWireSize = int(unsafe.Offsetof(RawEvent{}.EarlyResp)) + len(RawEvent{}.EarlyResp)
+
+// parseRawEvent decodes a perf sample into a RawEvent. It reads fields at
+// their fixed offsets rather than via binary.Read, whose per-element
+// reflection over the 1.8 KB payload cost ~25µs per event on the
+// perf-reader goroutine and caused ring overflows at around 13k requests
+// per second.
 func parseRawEvent(data []byte) (*RawEvent, error) {
-	if len(data) < int(unsafe.Sizeof(RawEvent{})) {
+	if len(data) < rawEventWireSize {
 		return nil, errors.New("event data too short")
 	}
 
-	event := &RawEvent{}
-	reader := bytes.NewReader(data)
-
-	if err := binary.Read(reader, binary.LittleEndian, event); err != nil {
-		return nil, fmt.Errorf("failed to parse event: %w", err)
-	}
-
-	return event, nil
+	var e RawEvent
+	le := binary.LittleEndian
+	e.TimestampUs = le.Uint64(data[unsafe.Offsetof(e.TimestampUs):])
+	e.LatencyUs = le.Uint64(data[unsafe.Offsetof(e.LatencyUs):])
+	e.PID = le.Uint32(data[unsafe.Offsetof(e.PID):])
+	e.TID = le.Uint32(data[unsafe.Offsetof(e.TID):])
+	e.FD = le.Uint32(data[unsafe.Offsetof(e.FD):])
+	copy(e.Comm[:], data[unsafe.Offsetof(e.Comm):])
+	e.ReqSize = le.Uint32(data[unsafe.Offsetof(e.ReqSize):])
+	e.RespSize = le.Uint32(data[unsafe.Offsetof(e.RespSize):])
+	e.ActualRespBytes = le.Uint32(data[unsafe.Offsetof(e.ActualRespBytes):])
+	e.IsPartial = data[unsafe.Offsetof(e.IsPartial)]
+	e.ClientType = data[unsafe.Offsetof(e.ClientType)]
+	e.EarlyLen = data[unsafe.Offsetof(e.EarlyLen)]
+	copy(e.Data[:], data[unsafe.Offsetof(e.Data):])
+	copy(e.RespData[:], data[unsafe.Offsetof(e.RespData):])
+	copy(e.EarlyResp[:], data[unsafe.Offsetof(e.EarlyResp):])
+	return &e, nil
 }
 
 // Stop stops reading events and waits for the reader goroutine to exit.

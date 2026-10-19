@@ -187,7 +187,7 @@ def verify_match(wl, cap):
         checks["put_has_request_size"] = True
 
     # For GET: response_size > 0
-    if wl["method"] == "GET" and wl["operation"] == "GET_OBJECT":
+    if wl["method"] == "GET" and wl["operation"] in ("GET_OBJECT", "GET_OBJECT_RANGE"):
         checks["get_has_response_size"] = cap.get("response_size", 0) > 0
     else:
         checks["get_has_response_size"] = True

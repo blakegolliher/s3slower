@@ -99,7 +99,8 @@ func TestRecordRequest(t *testing.T) {
 		m.RecordRequest(labels, 10, 0, 0, false, 200)
 
 		counter, err := m.ResponseStatusTotal.GetMetricWith(prometheus.Labels{
-			"status_code": "200",
+			"status_code":  "200",
+			"s3_operation": "GET_OBJECT",
 		})
 		require.NoError(t, err)
 		assert.NotNil(t, counter)
@@ -165,4 +166,25 @@ func BenchmarkRecordRequest(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m.RecordRequest(labels, float64(i%1000), 1024, 2048, false, 200)
 	}
+}
+
+// TestRecordRequest_ExtraBucketLabel tests that an extra label named like
+// an optional label (bucket, not opted in) does not leak into the status
+// metric, whose label set lacks it: client_golang would panic.
+func TestRecordRequest_ExtraBucketLabel(t *testing.T) {
+	m := New(nil, []string{"bucket"})
+	labels := prometheus.Labels{"comm": "aws", "s3_operation": "GET_OBJECT", "bucket": "from-target"}
+	assert.NotPanics(t, func() { m.RecordRequest(labels, 1, 0, 0, false, 200) })
+
+	withBucket := New([]string{"bucket"}, nil)
+	withBucket.RecordRequest(prometheus.Labels{"comm": "aws", "s3_operation": "GET_OBJECT", "bucket": "b"}, 1, 0, 0, false, 404)
+	_, err := withBucket.ResponseStatusTotal.GetMetricWith(prometheus.Labels{"status_code": "404", "s3_operation": "GET_OBJECT", "bucket": "b"})
+	assert.NoError(t, err)
+}
+
+func TestIsReservedLabel(t *testing.T) {
+	for _, n := range []string{"comm", "s3_operation", "bucket", "endpoint", "status_code"} {
+		assert.True(t, IsReservedLabel(n), n)
+	}
+	assert.False(t, IsReservedLabel("team"))
 }

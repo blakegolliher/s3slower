@@ -2,10 +2,13 @@
 package ebpf
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPipelineConfig tests pipeline configuration.
@@ -290,27 +293,43 @@ func TestPipelineAutoMode(t *testing.T) {
 	})
 }
 
-// TestClientTypeToString tests client type conversion.
-func TestClientTypeToString(t *testing.T) {
+// TestClientName tests client label derivation.
+func TestClientName(t *testing.T) {
 	tests := []struct {
-		name       string
-		clientType uint8
-		want       string
+		name, process, thread, want string
 	}{
-		{"unknown", ClientUnknown, "unknown"},
-		{"warp", ClientWarp, "warp"},
-		{"elbencho", ClientElbencho, "elbencho"},
-		{"boto3", ClientBoto3, "boto3"},
-		{"s3cmd", ClientS3cmd, "s3cmd"},
-		{"awscli", ClientAWSCLI, "awscli"},
+		{"unknown_uses_process", "java", "pool-1-thread-7", "java"},
+		{"nothing_known", "", "", "unknown"},
+		{"warp", "warp", "warp", "warp"},
+		{"mc", "mc", "mc", "mc"},
+		{"elbencho_named_threads", "elbencho", "elb-wrk-3", "elbencho"},
+		{"boto3_named_threads", "python3", "ThreadPoolExecu", "boto3"},
+		{"thread_identifies_client", "", "elb-wrk-0", "elbencho"},
+		{"s3cmd", "s3cmd", "s3cmd", "s3cmd"},
+		{"awscli", "aws", "aws", "awscli"},
+		{"not_mc_prefix", "mcp-server", "mcp-server", "mcp-server"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := clientTypeToString(tt.clientType)
-			assert.Equal(t, tt.want, result)
+			assert.Equal(t, tt.want, clientName(tt.process, tt.thread))
 		})
 	}
+}
+
+// TestProcessName tests that client labels use the process name, not the
+// calling thread's name, and fall back to the thread name for gone PIDs.
+func TestProcessName(t *testing.T) {
+	p, _ := NewPipelineWithMock(PipelineConfig{})
+
+	self, err := os.ReadFile("/proc/self/comm")
+	require.NoError(t, err)
+	want := strings.TrimSpace(string(self))
+	pid := uint32(os.Getpid())
+
+	assert.Equal(t, want, p.processName(pid, "worker-thread-7"))
+	assert.Equal(t, want, p.processName(pid, "worker-thread-8"), "cached")
+	assert.Equal(t, "thread-name", p.processName(1<<30, "thread-name"), "no such pid")
 }
 
 // BenchmarkPipelineEvent benchmarks event processing through the pipeline.

@@ -40,14 +40,18 @@ type Config struct {
 	LogPrefix        string // Log file basename prefix; empty defaults to "s3slower".
 	LogMaxSizeMB     int
 	LogMaxBackups    int
-	OutputFormat     string // "table", "simple", "json"
+	OutputFormat     string // "table", "simple", "json", "top"
 
 	// Screen settings
 	TableFormat  bool
 	MaxURLLength int
 
-	// Watch settings
+	// Watch settings: when set, only events from these process names
+	// (or client labels such as "boto3") are reported.
 	WatchProcesses []string
+
+	// PerfBufferKB is the per-CPU perf ring size; <= 0 uses the default.
+	PerfBufferKB int
 
 	// Config file paths for hot-reload
 	ConfigPath  string
@@ -97,6 +101,11 @@ type Runner struct {
 	// targetLabels maps PIDs to their target's Prometheus labels
 	targetLabels map[uint32]map[string]string
 
+	// watch holds the --watch names (truncated to the kernel's 15-char
+	// comm limit), matched against the thread name, process name and
+	// client label. Empty means report every process.
+	watch map[string]bool
+
 	// lastAppCfg is the most recently applied app config, kept so reloads
 	// can warn about changes to settings that only take effect at startup.
 	lastAppCfg *config.AppConfig
@@ -143,6 +152,8 @@ func New(cfg Config) (*Runner, error) {
 			outputMode = terminal.OutputModeJSON
 		case "simple":
 			outputMode = terminal.OutputModeSimple
+		case "top":
+			outputMode = terminal.OutputModeTop
 		default:
 			if !cfg.TableFormat {
 				outputMode = terminal.OutputModeSimple
@@ -193,13 +204,15 @@ func New(cfg Config) (*Runner, error) {
 		}
 	}
 
-	// Convert --watch process names into target configs
+	// Convert --watch process names into target configs and the event filter
 	if len(cfg.WatchProcesses) > 0 {
+		r.watch = make(map[string]bool)
 		for _, proc := range cfg.WatchProcesses {
 			proc = strings.TrimSpace(proc)
 			if proc == "" {
 				continue
 			}
+			r.watch[truncateComm(proc)] = true
 			r.targets = append(r.targets, config.TargetConfig{
 				ID:         "watch-" + proc,
 				MatchType:  config.MatchTypeComm,
@@ -216,7 +229,7 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.EnablePrometheus {
 		addr := net.JoinHostPort(cfg.PrometheusHost, fmt.Sprintf("%d", cfg.PrometheusPort))
 		r.optionalLabelKeys = validateOptionalLabels(cfg.MetricsOptionalLabels)
-		r.extraLabelKeys = config.CollectExtraLabelKeys(r.targets)
+		r.extraLabelKeys = filterReservedLabels(config.CollectExtraLabelKeys(r.targets))
 		exporter, err := metrics.NewExporter(addr, r.optionalLabelKeys, r.extraLabelKeys)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create prometheus exporter: %w", err)
@@ -382,6 +395,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		LibraryPath:  r.config.LibraryPath,
 		BufferSize:   1000,
 		Debug:        r.config.Debug,
+		PerfBufferKB: r.config.PerfBufferKB,
 	}
 
 	// Try to create real BPF pipeline, fall back to mock if not available
@@ -427,6 +441,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Write headers
 	if r.terminal != nil {
 		r.terminal.WriteHeader()
+		r.terminal.Start()
+		defer r.terminal.Stop()
 	}
 	if r.logger != nil {
 		r.logger.WriteHeader()
@@ -487,6 +503,10 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) handleEvent(evt *event.S3Event) {
 	r.debugf("Event: pid=%d method=%s op=%s bucket=%s endpoint=%s s3=%v latency=%.2fms",
 		evt.PID, evt.Method, evt.Operation, evt.Bucket, evt.Endpoint, evt.IsS3Traffic, evt.LatencyMs)
+
+	if len(r.watch) > 0 && !r.watch[evt.Comm] && !r.watch[evt.Process] && !r.watch[evt.ClientType] {
+		return
+	}
 
 	// Skip clearly non-HTTP traffic (no method, no bucket, no S3 markers)
 	if evt.Bucket == "" && evt.Operation == "UNKNOWN" && !evt.IsS3Traffic {
@@ -596,6 +616,31 @@ func (r *Runner) isLikelyS3Event(evt *event.S3Event) bool {
 	// On-prem S3 endpoints use IPs (e.g., 172.200.203.3); non-S3 noise
 	// targets DNS hostnames (mirrors.rit.edu, pypi.org, etc.).
 	return httputil.IsIPAddress(evt.Endpoint)
+}
+
+// filterReservedLabels drops target prom_labels keys that collide with
+// s3slower's own label names; registering them would either duplicate a
+// label or give the status metric a label it was not registered with.
+func filterReservedLabels(keys []string) []string {
+	out := keys[:0]
+	for _, k := range keys {
+		if metrics.IsReservedLabel(k) {
+			fmt.Fprintf(os.Stderr, "warning: targets prom_labels: ignoring reserved label %q\n", k)
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// truncateComm limits a process name to the 15 characters the kernel
+// keeps in task->comm, so --watch names longer than that still match.
+func truncateComm(name string) string {
+	const maxComm = 15
+	if len(name) > maxComm {
+		return name[:maxComm]
+	}
+	return name
 }
 
 // validateOptionalLabels returns the subset of requested labels that are
