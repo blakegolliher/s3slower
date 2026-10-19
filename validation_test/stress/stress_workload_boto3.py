@@ -224,7 +224,7 @@ def do_get_range(s3, bucket, registry, logf):
     except Exception as e:
         print(f"  GET_RANGE error: {e}", file=sys.stderr)
         ec = 1
-    log_op(logf, "GET_OBJECT", "GET", bucket, key, range_size, ec)
+    log_op(logf, "GET_OBJECT_RANGE", "GET", bucket, key, range_size, ec)
 
 
 def do_head(s3, bucket, registry, logf):
@@ -284,7 +284,7 @@ def do_copy(s3, bucket, registry, logf):
     except Exception as e:
         print(f"  COPY error: {e}", file=sys.stderr)
         ec = 1
-    log_op(logf, "PUT_OBJECT", "PUT", bucket, dst_key, size, ec)
+    log_op(logf, "COPY_OBJECT", "PUT", bucket, dst_key, size, ec)
 
 
 DISPATCH = {

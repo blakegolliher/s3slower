@@ -26,9 +26,11 @@ type bpfEventT struct {
 	ActualRespBytes uint32
 	IsPartial       uint8
 	ClientType      uint8
-	Pad             [2]uint8
-	Data            [1024]int8
+	EarlyLen        uint8
+	Pad             uint8
+	Data            [2048]int8
 	RespData        [768]int8
+	EarlyResp       [16]int8
 	_               [4]byte
 }
 
@@ -47,9 +49,11 @@ type bpfReqInfoT struct {
 	ReqSize    uint32
 	Fd         uint32
 	ClientType uint8
+	EarlyLen   uint8
 	Comm       [16]int8
-	Data       [1024]int8
-	_          [7]byte
+	Early      [16]int8
+	Data       [2048]int8
+	_          [6]byte
 }
 
 // loadBpf returns the embedded CollectionSpec for bpf.

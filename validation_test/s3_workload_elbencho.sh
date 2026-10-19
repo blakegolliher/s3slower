@@ -99,8 +99,9 @@ echo "  [9/11] head-object x2: exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 6. Read objects (GET)
 ec=$(run_elbencho -r -t1 -n0 -N2 -s 1k -b 1m --s3objprefix "test/" "$BUCKET" 2>/dev/null)
-log_op "GET_OBJECT" "GET" "test/r0-f0" 0 "$ec"
-log_op "GET_OBJECT" "GET" "test/r0-f1" 0 "$ec"
+# elbencho sends a Range header on every read, so reads are ranged GETs.
+log_op "GET_OBJECT_RANGE" "GET" "test/r0-f0" 0 "$ec"
+log_op "GET_OBJECT_RANGE" "GET" "test/r0-f1" 0 "$ec"
 echo "  [10/11] get-object x2: exit=$ec (pid=$(get_elbencho_pid))" >&2
 
 # 7. List objects

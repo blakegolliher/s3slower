@@ -31,7 +31,7 @@ DIST_DIR := dist
 
 .PHONY: all build test test-race test-cover test-validate test-stress lint fmt tidy deps \
         rpm deb packages install uninstall clean generate version dev ci help \
-        monitoring-up monitoring-down monitoring-logs
+        monitoring-up monitoring-down monitoring-logs dashboard demo-boto3 demo-awscli
 
 # Default target
 all: build
@@ -80,6 +80,18 @@ monitoring-down:
 monitoring-logs:
 	cd monitoring && podman-compose logs -f
 
+# Regenerate the Grafana dashboard JSON from its generator
+dashboard:
+	python3 monitoring/grafana/generate_dashboard.py monitoring/grafana/dashboards/s3slower.json
+
+# Demo workloads (see demo/README.md). Need S3_ENDPOINT, S3_BUCKET and AWS
+# credentials in the environment; pass extra flags with DEMO_ARGS=...
+demo-boto3:
+	python3 demo/ai_pipeline_workload.py $(DEMO_ARGS)
+
+demo-awscli:
+	demo/awscli_workload.sh
+
 # Run tests with coverage
 test-cover:
 	@mkdir -p $(BUILD_DIR)
@@ -108,7 +120,11 @@ deps:
 
 # Generate BPF program (requires clang, bpftool)
 KERNEL_VERSION := $(shell uname -r)
-KERNEL_SRC := $(shell if [ -d /usr/src/kernels/$(KERNEL_VERSION) ]; then echo /usr/src/kernels/$(KERNEL_VERSION); else ls -d /usr/src/kernels/* 2>/dev/null | head -1; fi)
+# Kernel source/headers tree providing libbpf headers: RHEL-family
+# (/usr/src/kernels/<ver>) or Debian/Ubuntu (/usr/src/linux-headers-<ver>).
+# Override with `make generate KERNEL_SRC=...`.
+KERNEL_SRC ?= $(shell for d in /usr/src/kernels/$(KERNEL_VERSION) /usr/src/linux-headers-$(KERNEL_VERSION) $$(ls -d /usr/src/kernels/* /usr/src/linux-headers-* 2>/dev/null); do \
+	if [ -f $$d/tools/bpf/resolve_btfids/libbpf/include/bpf/bpf_helpers.h ] || [ -f $$d/tools/lib/bpf/bpf_helpers.h ]; then echo $$d; break; fi; done)
 LIBBPF_INCLUDE := -I$(KERNEL_SRC)/tools/lib/bpf -I$(KERNEL_SRC)/tools/bpf/resolve_btfids/libbpf/include
 
 generate:
@@ -195,6 +211,9 @@ help:
 	@echo "  monitoring-up   Start Prometheus + Grafana"
 	@echo "  monitoring-down Stop Prometheus + Grafana"
 	@echo "  monitoring-logs Tail monitoring container logs"
+	@echo "  dashboard       Regenerate the Grafana dashboard JSON"
+	@echo "  demo-boto3      Run the boto3 AI-pipeline demo workload"
+	@echo "  demo-awscli     Run the AWS CLI AI-pipeline demo workload"
 	@echo ""
 	@echo "Development:"
 	@echo "  fmt          Format code"

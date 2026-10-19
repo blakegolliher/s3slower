@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestParseHTTPRequest tests the ParseHTTPRequest function.
-func TestParseHTTPRequest(t *testing.T) {
+// TestParseRequest tests the basic fields returned by ParseRequest.
+func TestParseRequest(t *testing.T) {
 	tests := []struct {
 		name           string
 		raw            []byte
@@ -140,26 +140,53 @@ func TestParseHTTPRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			method, host, path, contentLen := ParseHTTPRequest(tt.raw)
-			assert.Equal(t, tt.wantMethod, method, "method mismatch")
-			assert.Equal(t, tt.wantHost, host, "host mismatch")
-			assert.Equal(t, tt.wantPath, path, "path mismatch")
-			assert.Equal(t, tt.wantContentLen, contentLen, "content-length mismatch")
+			r := ParseRequest(tt.raw)
+			assert.Equal(t, tt.wantMethod, r.Method, "method mismatch")
+			assert.Equal(t, tt.wantHost, r.Host, "host mismatch")
+			assert.Equal(t, tt.wantPath, r.Path, "path mismatch")
+			assert.Equal(t, tt.wantContentLen, r.ContentLength, "content-length mismatch")
 		})
 	}
 }
 
-// TestParseHTTPRequest_UTF8Path tests UTF-8 path handling.
-func TestParseHTTPRequest_UTF8Path(t *testing.T) {
+// TestParseRequest_UTF8Path tests UTF-8 path handling.
+func TestParseRequest_UTF8Path(t *testing.T) {
 	raw := []byte("GET /bucket/ключ HTTP/1.1\r\nHost: s3.amazonaws.com\r\n\r\n")
-	method, _, path, _ := ParseHTTPRequest(raw)
+	r := ParseRequest(raw)
 
-	assert.Equal(t, "GET", method)
-	assert.Contains(t, path, "ключ")
+	assert.Equal(t, "GET", r.Method)
+	assert.Contains(t, r.Path, "ключ")
 }
 
-// TestParseHTTPResponse tests the ParseHTTPResponse function.
-func TestParseHTTPResponse(t *testing.T) {
+// TestParseRequest_Headers tests the header-derived fields used for
+// operation refinement and byte accounting.
+func TestParseRequest_Headers(t *testing.T) {
+	t.Run("range_header", func(t *testing.T) {
+		r := ParseRequest([]byte("GET /b/k HTTP/1.1\r\nHost: h\r\nRange: bytes=0-65535\r\n\r\n"))
+		assert.Equal(t, "bytes=0-65535", r.Range)
+		assert.False(t, r.HasContentLength)
+		assert.True(t, r.HeadersComplete)
+	})
+	t.Run("copy_source", func(t *testing.T) {
+		r := ParseRequest([]byte("PUT /b/dst HTTP/1.1\r\nx-amz-copy-source: /b/src\r\nContent-Length: 0\r\n\r\n"))
+		assert.True(t, r.CopySource)
+		assert.True(t, r.HasContentLength)
+		assert.Equal(t, 0, r.ContentLength)
+	})
+	t.Run("decoded_length_wins_regardless_of_order", func(t *testing.T) {
+		r := ParseRequest([]byte("PUT /b/k HTTP/1.1\r\nX-Amz-Decoded-Content-Length: 1000\r\nContent-Length: 1100\r\n\r\n"))
+		assert.Equal(t, 1000, r.ContentLength)
+		assert.True(t, r.HasContentLength)
+	})
+	t.Run("truncated_head", func(t *testing.T) {
+		r := ParseRequest([]byte("PUT /b/k HTTP/1.1\r\nHost: h\r\nAuthorization: AWS4-HMAC-SHA256 Cred"))
+		assert.False(t, r.HeadersComplete)
+		assert.False(t, r.HasContentLength)
+	})
+}
+
+// TestParseResponse tests status and Content-Length parsing.
+func TestParseResponse(t *testing.T) {
 	tests := []struct {
 		name              string
 		raw               []byte
@@ -192,11 +219,27 @@ func TestParseHTTPResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, contentLength := ParseHTTPResponse(tt.raw)
-			assert.Equal(t, tt.wantStatus, status)
-			assert.Equal(t, tt.wantContentLength, contentLength)
+			r := ParseResponse(tt.raw)
+			assert.Equal(t, tt.wantStatus, r.StatusCode)
+			assert.Equal(t, tt.wantContentLength, r.ContentLength)
 		})
 	}
+}
+
+// TestParseResponse_HeaderLen tests header-block detection used to
+// separate body bytes from header bytes.
+func TestParseResponse_HeaderLen(t *testing.T) {
+	head := "HTTP/1.1 204 No Content\r\nx-amz-request-id: 1\r\n\r\n"
+	r := ParseResponse([]byte(head + "trailing"))
+	assert.Equal(t, len(head), r.HeaderLen)
+	assert.False(t, r.HasContentLength)
+
+	r = ParseResponse([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+	assert.True(t, r.HasContentLength)
+	assert.Equal(t, 0, r.ContentLength)
+
+	r = ParseResponse([]byte("HTTP/1.1 200 OK\r\nContent-Type: x"))
+	assert.Equal(t, 0, r.HeaderLen, "truncated head has no known header length")
 }
 
 // TestParseBucketEndpoint tests the ParseBucketEndpoint function.
@@ -338,7 +381,6 @@ func TestParseBucketEndpoint_Unicode(t *testing.T) {
 	assert.Equal(t, "s3.amazonaws.com", endpoint)
 }
 
-
 // TestDetectS3Operation tests the DetectS3Operation function.
 func TestDetectS3Operation(t *testing.T) {
 	tests := []struct {
@@ -351,20 +393,38 @@ func TestDetectS3Operation(t *testing.T) {
 		{name: "get_object", method: "GET", path: "/bucket/key", want: OpGetObject},
 		{name: "list_prefix", method: "GET", path: "/bucket?list-type=2&prefix=foo/", want: OpListPrefix},
 		{name: "list_objects", method: "GET", path: "/bucket/", want: OpListObjects},
+		{name: "list_objects_no_slash", method: "GET", path: "/bucket", want: OpListObjects},
+		{name: "list_objects_v1_params", method: "GET", path: "/bucket?delimiter=%2F&encoding-type=url", want: OpListObjects},
+		{name: "list_object_versions", method: "GET", path: "/bucket?versions", want: OpListObjects},
+		{name: "list_buckets", method: "GET", path: "/", want: OpListBuckets},
+		{name: "list_buckets_paged", method: "GET", path: "/?max-buckets=100", want: OpListBuckets},
+		{name: "list_buckets_continuation", method: "GET", path: "/?continuation-token=abc", want: OpListBuckets},
+		{name: "list_buckets_prefix", method: "GET", path: "/?prefix=team-", want: OpListBuckets},
+		{name: "list_buckets_go_sdk", method: "GET", path: "/?x-id=ListBuckets", want: OpListBuckets},
+		{name: "list_vhost_v2", method: "GET", path: "/?list-type=2&prefix=a%2F", want: OpListPrefix},
+		{name: "mpu_list", method: "GET", path: "/bucket?uploads", want: OpMPUList},
+		{name: "mpu_list_parts", method: "GET", path: "/bucket/key?uploadId=abc", want: OpMPUListParts},
+		{name: "bucket_location", method: "GET", path: "/bucket?location", want: OpBucketConfig},
+		{name: "get_object_with_query", method: "GET", path: "/bucket/key?versionId=3", want: OpGetObject},
 
 		// PUT operations
 		{name: "put_object", method: "PUT", path: "/bucket/key", want: OpPutObject},
 		{name: "mpu_part", method: "PUT", path: "/bucket/key?partNumber=1&uploadId=abc", want: OpMPUPart},
 		{name: "create_bucket", method: "PUT", path: "/bucket", want: OpCreateBucket},
+		{name: "put_bucket_versioning", method: "PUT", path: "/bucket?versioning", want: OpBucketConfig},
 
 		// POST operations
 		{name: "mpu_create", method: "POST", path: "/bucket/key?uploads", want: OpMPUCreate},
 		{name: "mpu_complete", method: "POST", path: "/bucket/key?uploadId=abc", want: OpMPUComplete},
+		{name: "delete_objects", method: "POST", path: "/bucket?delete", want: OpDeleteObjects},
+		{name: "delete_objects_empty_value", method: "POST", path: "/bucket?delete=", want: OpDeleteObjects},
+		{name: "unknown_post", method: "POST", path: "/v1/metrics", want: OpUnknown},
 
 		// DELETE operations
 		{name: "delete_object", method: "DELETE", path: "/bucket/key", want: OpDeleteObject},
 		{name: "mpu_abort", method: "DELETE", path: "/bucket/key?uploadId=abc", want: OpMPUAbort},
 		{name: "delete_bucket", method: "DELETE", path: "/bucket", want: OpDeleteBucket},
+		{name: "delete_bucket_policy", method: "DELETE", path: "/bucket?policy", want: OpBucketConfig},
 
 		// HEAD operations
 		{name: "head_object", method: "HEAD", path: "/bucket/key", want: OpHeadObject},
@@ -380,4 +440,40 @@ func TestDetectS3Operation(t *testing.T) {
 			assert.Equal(t, tt.want, op)
 		})
 	}
+}
+
+// TestClassifyRequest tests header-based refinement of the operation.
+func TestClassifyRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want S3Operation
+	}{
+		{"ranged_get", "GET /b/k HTTP/1.1\r\nRange: bytes=100-199\r\n\r\n", OpGetObjectRange},
+		{"suffix_range_get", "GET /b/k HTTP/1.1\r\nRange: bytes=-8192\r\n\r\n", OpGetObjectRange},
+		{"full_get", "GET /b/k HTTP/1.1\r\nHost: h\r\n\r\n", OpGetObject},
+		{"copy_object", "PUT /b/dst HTTP/1.1\r\nX-Amz-Copy-Source: b/src\r\n\r\n", OpCopyObject},
+		{"upload_part_copy_stays_part", "PUT /b/k?partNumber=2&uploadId=x HTTP/1.1\r\nX-Amz-Copy-Source: b/src\r\n\r\n", OpMPUPart},
+		{"plain_put", "PUT /b/k HTTP/1.1\r\nContent-Length: 5\r\n\r\n", OpPutObject},
+		{"range_on_list_ignored", "GET /b?list-type=2 HTTP/1.1\r\nRange: bytes=0-1\r\n\r\n", OpListPrefix},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ClassifyRequest(ParseRequest([]byte(tt.raw))))
+		})
+	}
+}
+
+// TestParseResponse_InterimThenFinal tests a 1xx head and the final
+// response arriving in one read.
+func TestParseResponse_InterimThenFinal(t *testing.T) {
+	interim := "HTTP/1.1 100 Continue\r\n\r\n"
+	final := "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n"
+	r := ParseResponse([]byte(interim + final + "payload"))
+	assert.Equal(t, 200, r.StatusCode)
+	assert.Equal(t, 7, r.ContentLength)
+	assert.Equal(t, len(interim)+len(final), r.HeaderLen)
+
+	r = ParseResponse([]byte(interim))
+	assert.Equal(t, 100, r.StatusCode, "a lone interim head is still reported as such")
 }

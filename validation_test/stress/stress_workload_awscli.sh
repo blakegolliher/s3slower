@@ -192,7 +192,7 @@ do_get_range() {
         --range "bytes=${start}-${end}" /dev/null)
     parse_pid_ec "$result"
     rm -f "$tmpfile"
-    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT" "GET" "$BUCKET" "$key" "$range_size" "$EC_VAL"
+    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT_RANGE" "GET" "$BUCKET" "$key" "$range_size" "$EC_VAL"
 }
 
 do_head() {
@@ -244,7 +244,7 @@ do_copy() {
     result=$(run_s3api copy-object --bucket "$BUCKET" --key "$dst_key" \
         --copy-source "$BUCKET/$src_key")
     parse_pid_ec "$result"
-    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "PUT_OBJECT" "PUT" "$BUCKET" "$dst_key" "$size" "$EC_VAL"
+    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "COPY_OBJECT" "PUT" "$BUCKET" "$dst_key" "$size" "$EC_VAL"
     if [[ "$EC_VAL" -eq 0 ]]; then
         registry_add "$REGISTRY_FILE" "$dst_key" "$size"
     fi

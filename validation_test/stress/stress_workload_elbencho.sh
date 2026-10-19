@@ -142,7 +142,7 @@ do_get_full() {
         -r -t 1 -n 0 -N "$num_files" -s "$size" -b "$size" \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
-    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT" "GET" "$BUCKET" "$key" "$size" "$EC_VAL"
+    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT_RANGE" "GET" "$BUCKET" "$key" "$size" "$EC_VAL"  # elbencho always sends Range
 }
 
 do_get_range() {
@@ -166,7 +166,7 @@ do_get_range() {
         -r -t 1 -n 0 -N "$num_files" -s "$size" -b "$blocksize" \
         "/${BUCKET}/${prefix}/" 2>/dev/null)
     parse_pid_ec "$result"
-    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT" "GET" "$BUCKET" "$key" "$blocksize" "$EC_VAL"
+    log_op "$OUTPUT_JSONL" "$PID_VAL" "$CLIENT" "GET_OBJECT_RANGE" "GET" "$BUCKET" "$key" "$blocksize" "$EC_VAL"
 }
 
 do_head() {

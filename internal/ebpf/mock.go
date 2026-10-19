@@ -103,7 +103,7 @@ func (m *MockTracer) AttachUprobes(libraryPath string, mode ProbeMode) error {
 }
 
 // AttachGoTLSUprobes attaches mock Go TLS uprobes.
-func (m *MockTracer) AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint64) error {
+func (m *MockTracer) AttachGoTLSUprobes(binaryPath string, offs GoTLSOffsets) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

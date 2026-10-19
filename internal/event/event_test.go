@@ -154,7 +154,7 @@ func TestParseStatusCode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			event := NewS3Event()
-			event.ParseStatusCode(tt.data)
+			event.ParseStatusCode(tt.data, nil)
 
 			assert.Equal(t, tt.wantStatus, event.StatusCode)
 			assert.Equal(t, tt.wantIsError, event.IsError)
@@ -248,4 +248,106 @@ func BenchmarkParseFromRaw(b *testing.B) {
 		event := NewS3Event()
 		event.ParseFromRaw(data)
 	}
+}
+
+// TestPayloadSizesAndRange tests body-byte accounting and ranged-read
+// classification across request and response parsing.
+func TestPayloadSizesAndRange(t *testing.T) {
+	const headWrite = 760 // size of the write that carried the request head
+
+	newEvent := func(req string, respRead uint64, resp string) *S3Event {
+		e := NewS3Event()
+		e.RequestSize = headWrite
+		e.ResponseSize = respRead
+		e.ParseFromRaw([]byte(req))
+		e.ParseStatusCode([]byte(resp), nil)
+		return e
+	}
+
+	t.Run("get_without_body_reports_zero_request_bytes", func(t *testing.T) {
+		e := newEvent("GET /b/k HTTP/1.1\r\nHost: h\r\n\r\n", 4096,
+			"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n")
+		assert.Equal(t, uint64(0), e.RequestSize)
+		assert.Equal(t, uint64(1048576), e.ResponseSize)
+		assert.Equal(t, http.OpGetObject, e.Operation)
+	})
+
+	t.Run("put_uses_content_length", func(t *testing.T) {
+		e := newEvent("PUT /b/k HTTP/1.1\r\nContent-Length: 300000\r\n\r\n", 277,
+			"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+		assert.Equal(t, uint64(300000), e.RequestSize)
+		assert.Equal(t, uint64(0), e.ResponseSize)
+	})
+
+	t.Run("truncated_head_keeps_write_size", func(t *testing.T) {
+		e := newEvent("PUT /b/k HTTP/1.1\r\nHost: h\r\nAuthorization: AWS4", 0, "")
+		assert.Equal(t, uint64(headWrite), e.RequestSize)
+	})
+
+	t.Run("range_header_marks_ranged_get", func(t *testing.T) {
+		e := newEvent("GET /b/k HTTP/1.1\r\nRange: bytes=0-65535\r\n\r\n", 4096,
+			"HTTP/1.1 206 Partial Content\r\nContent-Length: 65536\r\n\r\n")
+		assert.Equal(t, http.OpGetObjectRange, e.Operation)
+		assert.Equal(t, "bytes=0-65535", e.Range)
+		assert.Equal(t, uint64(65536), e.ResponseSize)
+	})
+
+	t.Run("206_marks_ranged_get_without_header", func(t *testing.T) {
+		e := newEvent("GET /b/k HTTP/1.1\r\nHost: h\r\n\r\n", 4096,
+			"HTTP/1.1 206 Partial Content\r\nContent-Length: 1024\r\n\r\n")
+		assert.Equal(t, http.OpGetObjectRange, e.Operation)
+	})
+
+	t.Run("head_has_no_body", func(t *testing.T) {
+		e := newEvent("HEAD /b/k HTTP/1.1\r\nHost: h\r\n\r\n", 430,
+			"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n")
+		assert.Equal(t, uint64(0), e.ResponseSize)
+	})
+
+	t.Run("204_without_content_length_has_no_body", func(t *testing.T) {
+		resp := "HTTP/1.1 204 No Content\r\nx-amz-request-id: abc\r\n\r\n"
+		e := newEvent("DELETE /b/k HTTP/1.1\r\nHost: h\r\n\r\n", uint64(len(resp)), resp)
+		assert.Equal(t, uint64(0), e.ResponseSize)
+	})
+}
+
+// TestParseStatusCode_EarlyBytes tests recovering the status of a response
+// whose status line the client read byte by byte.
+func TestParseStatusCode_EarlyBytes(t *testing.T) {
+	headers := "x-amz-request-id: 1\r\nContent-Length: 243\r\n\r\n<?xml"
+
+	t.Run("final_status_from_early_bytes", func(t *testing.T) {
+		e := NewS3Event()
+		e.Method = "PUT"
+		e.ResponseSize = uint64(len(headers))
+		e.ParseStatusCode([]byte(headers), []byte("HTTP/1.1 503 Slo"))
+		assert.Equal(t, 503, e.StatusCode)
+		assert.True(t, e.IsError)
+		assert.Equal(t, uint64(243), e.ResponseSize)
+	})
+
+	t.Run("interim_100_in_early_bytes_ignored", func(t *testing.T) {
+		e := NewS3Event()
+		e.ParseStatusCode([]byte(headers), []byte("HTTP/1.1 100 Con"))
+		assert.Equal(t, 0, e.StatusCode)
+	})
+
+	t.Run("final_read_wins_over_early_bytes", func(t *testing.T) {
+		e := NewS3Event()
+		e.ParseStatusCode([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), []byte("HTTP/1.1 100 Con"))
+		assert.Equal(t, 200, e.StatusCode)
+	})
+}
+
+// TestParseFromRaw_TruncatedBodilessHead tests that a GET whose head was
+// cut off at the capture limit still reports zero request bytes.
+func TestParseFromRaw_TruncatedBodilessHead(t *testing.T) {
+	e := NewS3Event()
+	e.RequestSize = 2048
+	e.ParseFromRaw([]byte("GET /b/k HTTP/1.1\r\nX-Amz-Security-Token: AAAA"))
+	assert.Equal(t, uint64(0), e.RequestSize)
+
+	e = NewS3Event()
+	e.ParseFromRaw([]byte("PUT /b/k HTTP/1.1\r\nContent-Length: 6000000000\r\n\r\n"))
+	assert.Equal(t, uint64(6000000000), e.RequestSize, "sizes above 4 GiB do not wrap")
 }

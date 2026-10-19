@@ -2,10 +2,14 @@
 package ebpf
 
 import (
+	"bytes"
+	"encoding/binary"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestProbeMode tests probe mode constants.
@@ -426,4 +430,58 @@ func BenchmarkEventProcessing(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		tracer.InjectEvent(events[i%len(events)])
 	}
+}
+
+// TestParseRawEvent checks the fixed-offset decoder against the
+// reflection-based encoding/binary layout of the same struct.
+func TestParseRawEvent(t *testing.T) {
+	want := RawEvent{
+		TimestampUs:     1111,
+		LatencyUs:       2222,
+		PID:             3333,
+		TID:             4444,
+		FD:              5,
+		Comm:            [16]byte{'p', 'y', 't', 'h', 'o', 'n', '3'},
+		ReqSize:         760,
+		RespSize:        4096,
+		ActualRespBytes: 4096,
+		IsPartial:       1,
+		ClientType:      ClientBoto3,
+		EarlyLen:        5,
+	}
+	copy(want.Data[:], "GET /b/k HTTP/1.1\r\n")
+	want.Data[len(want.Data)-1] = 'X'
+	copy(want.RespData[:], "HTTP/1.1 200 OK\r\n")
+	want.RespData[len(want.RespData)-1] = 'Y'
+	copy(want.EarlyResp[:], "HTTP/")
+	want.EarlyResp[len(want.EarlyResp)-1] = 'Z'
+
+	var buf bytes.Buffer
+	require.NoError(t, binary.Write(&buf, binary.LittleEndian, &want))
+	buf.Write([]byte{0, 0, 0, 0}) // C struct tail padding
+
+	got, err := parseRawEvent(buf.Bytes())
+	require.NoError(t, err)
+	assert.Equal(t, want, *got)
+
+	_, err = parseRawEvent(buf.Bytes()[:100])
+	assert.Error(t, err)
+}
+
+// TestRawEventMatchesBPFLayout pins RawEvent to the bpf2go-generated
+// struct event_t so a change to either side fails here, not in production.
+func TestRawEventMatchesBPFLayout(t *testing.T) {
+	var r RawEvent
+	var b bpfEventT
+	assert.Equal(t, unsafe.Sizeof(b), unsafe.Sizeof(r))
+	assert.Equal(t, unsafe.Offsetof(b.Comm), unsafe.Offsetof(r.Comm))
+	assert.Equal(t, unsafe.Offsetof(b.ReqSize), unsafe.Offsetof(r.ReqSize))
+	assert.Equal(t, unsafe.Offsetof(b.ClientType), unsafe.Offsetof(r.ClientType))
+	assert.Equal(t, unsafe.Offsetof(b.EarlyLen), unsafe.Offsetof(r.EarlyLen))
+	assert.Equal(t, unsafe.Offsetof(b.Data), unsafe.Offsetof(r.Data))
+	assert.Equal(t, unsafe.Offsetof(b.RespData), unsafe.Offsetof(r.RespData))
+	assert.Equal(t, unsafe.Offsetof(b.EarlyResp), unsafe.Offsetof(r.EarlyResp))
+	assert.Equal(t, len(b.Data), len(r.Data))
+	assert.Equal(t, len(b.RespData), len(r.RespData))
+	assert.Equal(t, len(b.EarlyResp), len(r.EarlyResp))
 }

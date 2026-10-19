@@ -233,7 +233,7 @@ def main():
 
     # Check response bytes for GETs
     get_workloads = [
-        w for w in successful_workload if w["operation"] == "GET_OBJECT"
+        w for w in successful_workload if w["operation"] in ("GET_OBJECT", "GET_OBJECT_RANGE")
     ]
     if get_workloads:
         get_buckets = {w["bucket"] for w in get_workloads}
@@ -242,7 +242,7 @@ def main():
             for labels, value
             in prom_metrics.get("s3slower_response_bytes_total", [])
             if labels.get("bucket", "") in get_buckets
-            and labels.get("s3_operation") == "GET_OBJECT"
+            and labels.get("s3_operation") in ("GET_OBJECT", "GET_OBJECT_RANGE")
         )
         has_bytes = total_resp_bytes > 0
         if not has_bytes:

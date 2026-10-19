@@ -49,9 +49,13 @@ type RawEvent struct {
 	ActualRespBytes uint32
 	IsPartial       uint8
 	ClientType      uint8
-	_               [2]byte // padding
-	Data            [1024]byte
+	EarlyLen        uint8 // bytes of EarlyResp in use
+	_               uint8 // padding
+	Data            [2048]byte
 	RespData        [768]byte
+	// EarlyResp holds the first bytes of tiny reads that preceded the
+	// response read, e.g. a status line the client read byte by byte.
+	EarlyResp [16]byte
 }
 
 // ClientType constants matching BPF program.
@@ -63,6 +67,13 @@ const (
 	ClientS3cmd    uint8 = 4
 	ClientAWSCLI   uint8 = 5
 )
+
+// GoTLSOffsets locates crypto/tls functions in a Go binary as file offsets.
+type GoTLSOffsets struct {
+	Write    uint64   // crypto/tls.(*Conn).Write entry
+	Read     uint64   // crypto/tls.(*Conn).Read entry
+	ReadRets []uint64 // RET instructions in Read, relative to Read
+}
 
 // EventCallback is called for each captured event.
 type EventCallback func(event *RawEvent)
@@ -90,10 +101,9 @@ type Tracer interface {
 	// AttachUprobes attaches uprobes to a TLS library.
 	AttachUprobes(libraryPath string, mode ProbeMode) error
 
-	// AttachGoTLSUprobes attaches Go crypto/tls uprobes with pre-computed
-	// RET offsets for crypto/tls.(*Conn).Read. This avoids re-opening
-	// the ELF binary to find RET offsets.
-	AttachGoTLSUprobes(binaryPath string, readRetOffsets []uint64) error
+	// AttachGoTLSUprobes attaches Go crypto/tls uprobes at pre-computed
+	// file offsets, which also works for stripped binaries.
+	AttachGoTLSUprobes(binaryPath string, offs GoTLSOffsets) error
 
 	// DetachAll detaches all probes.
 	DetachAll() error

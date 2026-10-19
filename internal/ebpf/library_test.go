@@ -2,13 +2,16 @@
 package ebpf
 
 import (
+	"debug/elf"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestLibraryFinder tests the LibraryFinder implementation.
@@ -311,4 +314,62 @@ func BenchmarkFindLibraries(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		finder.FindAll()
 	}
+}
+
+// TestAnalyzeGoTLSBinaryStripped builds a small crypto/tls program with and
+// without its ELF symbol table and checks both resolve to the same probe
+// offsets (the stripped build via .gopclntab).
+func TestAnalyzeGoTLSBinaryStripped(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go toolchain not available")
+	}
+	dir := t.TempDir()
+	src := `package main
+
+import (
+	"crypto/tls"
+	"os"
+)
+
+func main() {
+	if len(os.Args) > 99 {
+		var c *tls.Conn
+		c.Write(nil)
+		c.Read(nil)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module tlsprobe\n\ngo 1.21\n"), 0o644))
+
+	build := func(out string, ldflags ...string) string {
+		args := append([]string{"build", "-buildvcs=false", "-o", out}, ldflags...)
+		cmd := exec.Command(goBin, append(args, ".")...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOFLAGS=")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("cannot build test binary: %v\n%s", err, b)
+		}
+		return filepath.Join(dir, out)
+	}
+	full := build("full")
+	stripped := build("stripped", "-ldflags=-s -w")
+
+	f, err := elf.Open(stripped)
+	require.NoError(t, err)
+	_, symErr := f.Symbols()
+	f.Close()
+	require.ErrorIs(t, symErr, elf.ErrNoSymbols, "test binary should be stripped")
+
+	a, err := analyzeGoTLSBinary(full)
+	require.NoError(t, err)
+	b, err := analyzeGoTLSBinary(stripped)
+	require.NoError(t, err)
+
+	assert.True(t, a.hasTLS)
+	assert.True(t, b.hasTLS)
+	assert.NotEmpty(t, b.offsets.ReadRets)
+	assert.Equal(t, a.offsets, b.offsets)
+	assert.True(t, hasGoTLS(stripped))
 }

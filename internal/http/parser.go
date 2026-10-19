@@ -8,37 +8,53 @@ import (
 	"strings"
 )
 
-// ParseHTTPRequest parses a raw HTTP request and extracts method, host, path, and content-length.
-// Returns empty strings and 0 for invalid or empty input.
-func ParseHTTPRequest(raw []byte) (method, host, path string, contentLength int) {
+// Request holds the parts of an HTTP request head that s3slower uses.
+type Request struct {
+	Method string
+	Host   string
+	Path   string
+
+	// ContentLength is the request body size. For aws-chunked uploads it
+	// is x-amz-decoded-content-length (the object size), not the encoded
+	// wire size. Only meaningful when HasContentLength is set.
+	ContentLength    int
+	HasContentLength bool
+
+	// HeadersComplete reports whether the blank line ending the header
+	// block was seen. The BPF capture is truncated, so a missing header
+	// in an incomplete block may simply not have been captured.
+	HeadersComplete bool
+
+	// Range is the Range header value (e.g. "bytes=0-65535"), if any.
+	Range string
+
+	// CopySource is set when x-amz-copy-source is present (CopyObject,
+	// UploadPartCopy): the request carries no body.
+	CopySource bool
+}
+
+// ParseRequest parses a raw (possibly truncated) HTTP request head.
+// Returns a zero Request for invalid or empty input.
+func ParseRequest(raw []byte) Request {
+	var r Request
 	if len(raw) == 0 {
-		return "", "", "", 0
+		return r
 	}
 
-	// Try to decode as UTF-8, handling errors gracefully
-	text := string(raw)
+	lines := strings.Split(string(raw), "\r\n")
 
-	// Split into lines
-	lines := strings.Split(text, "\r\n")
-	if len(lines) == 0 {
-		return "", "", "", 0
-	}
-
-	// Parse request line
-	requestLine := lines[0]
-	parts := strings.Fields(requestLine)
+	// Request line: METHOD PATH VERSION
+	parts := strings.Fields(lines[0])
 	if len(parts) < 2 {
-		// Need at least method and path
-		return "", "", "", 0
+		return Request{}
 	}
+	r.Method = parts[0]
+	r.Path = parts[1]
 
-	method = parts[0]
-	path = parts[1]
-
-	// Parse headers (case-insensitive)
-	for i := 1; i < len(lines); i++ {
-		line := lines[i]
+	decodedLength := -1
+	for _, line := range lines[1:] {
 		if line == "" {
+			r.HeadersComplete = true
 			break
 		}
 
@@ -52,67 +68,82 @@ func ParseHTTPRequest(raw []byte) (method, host, path string, contentLength int)
 
 		switch headerName {
 		case "host":
-			host = headerValue
+			r.Host = headerValue
 		case "content-length":
 			if cl, err := strconv.Atoi(headerValue); err == nil {
-				contentLength = cl
+				r.ContentLength = cl
+				r.HasContentLength = true
 			}
 		case "x-amz-decoded-content-length":
-			// AWS chunked uploads: this is the actual object size
 			if cl, err := strconv.Atoi(headerValue); err == nil {
-				contentLength = cl
+				decodedLength = cl
 			}
+		case "range":
+			r.Range = headerValue
+		case "x-amz-copy-source":
+			r.CopySource = true
 		}
 	}
 
-	return method, host, path, contentLength
+	// The decoded length wins regardless of header order.
+	if decodedLength >= 0 {
+		r.ContentLength = decodedLength
+		r.HasContentLength = true
+	}
+
+	return r
 }
 
-// ParseHTTPResponse parses a raw HTTP response and extracts the status code
-// and Content-Length header value. Returns 0 for either field on invalid or
-// empty input.
-func ParseHTTPResponse(raw []byte) (statusCode int, contentLength int) {
-	if len(raw) == 0 {
-		return 0, 0
-	}
+// Response holds the parts of an HTTP response head that s3slower uses.
+type Response struct {
+	StatusCode       int
+	ContentLength    int
+	HasContentLength bool
 
-	// Check for HTTP prefix
+	// HeaderLen is the length of the header block including the final
+	// blank line, or 0 if the end of the block was not captured.
+	HeaderLen int
+}
+
+// ParseResponse parses a raw (possibly truncated) HTTP response head.
+// Returns a zero Response for invalid or empty input.
+func ParseResponse(raw []byte) Response {
+	var r Response
 	if !bytes.HasPrefix(raw, []byte("HTTP/")) {
-		return 0, 0
+		return r
 	}
 
-	// Find first space after HTTP version
+	// Status code is the run of digits after the first space.
 	spaceIdx := bytes.IndexByte(raw[5:], ' ')
 	if spaceIdx == -1 {
-		return 0, 0
+		return r
 	}
-
-	// Find the status code (next word after version)
 	start := 5 + spaceIdx + 1
-	if start >= len(raw) {
-		return 0, 0
-	}
-
-	// Extract status code (up to next space or end)
 	end := start
 	for end < len(raw) && raw[end] >= '0' && raw[end] <= '9' {
 		end++
 	}
-
-	if end == start {
-		return 0, 0
-	}
-
 	sc, err := strconv.Atoi(string(raw[start:end]))
 	if err != nil {
-		return 0, 0
+		return r
+	}
+	r.StatusCode = sc
+
+	if idx := bytes.Index(raw, []byte("\r\n\r\n")); idx != -1 {
+		r.HeaderLen = idx + 4
+		// A 1xx interim head followed by the final response in the same
+		// read: report the final response.
+		if sc >= 100 && sc < 200 && bytes.HasPrefix(raw[r.HeaderLen:], []byte("HTTP/")) {
+			final := ParseResponse(raw[r.HeaderLen:])
+			if final.HeaderLen > 0 {
+				final.HeaderLen += r.HeaderLen
+			}
+			return final
+		}
 	}
 
-	// Parse headers for Content-Length
-	text := string(raw)
-	lines := strings.Split(text, "\r\n")
-	for i := 1; i < len(lines); i++ {
-		line := lines[i]
+	lines := strings.Split(string(raw), "\r\n")
+	for _, line := range lines[1:] {
 		if line == "" {
 			break
 		}
@@ -120,16 +151,15 @@ func ParseHTTPResponse(raw []byte) (statusCode int, contentLength int) {
 		if colonIdx == -1 {
 			continue
 		}
-		headerName := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
-		if headerName == "content-length" {
-			headerValue := strings.TrimSpace(line[colonIdx+1:])
-			if cl, err := strconv.Atoi(headerValue); err == nil {
-				contentLength = cl
+		if strings.EqualFold(strings.TrimSpace(line[:colonIdx]), "content-length") {
+			if cl, err := strconv.Atoi(strings.TrimSpace(line[colonIdx+1:])); err == nil {
+				r.ContentLength = cl
+				r.HasContentLength = true
 			}
 		}
 	}
 
-	return sc, contentLength
+	return r
 }
 
 // ParseBucketEndpoint extracts bucket and endpoint from host and path.
@@ -201,79 +231,161 @@ const (
 type S3Operation string
 
 const (
-	OpGetObject    S3Operation = "GET_OBJECT"
-	OpPutObject    S3Operation = "PUT_OBJECT"
-	OpDeleteObject S3Operation = "DELETE_OBJECT"
-	OpHeadObject   S3Operation = "HEAD_OBJECT"
-	OpListObjects  S3Operation = "LIST_OBJECTS"
-	OpListPrefix   S3Operation = "LIST_PREFIX"
-	OpMPUCreate    S3Operation = "MPU_CREATE"
-	OpMPUPart      S3Operation = "MPU_PART"
-	OpMPUComplete  S3Operation = "MPU_COMPLETE"
-	OpMPUAbort     S3Operation = "MPU_ABORT"
-	OpCreateBucket S3Operation = "CREATE_BUCKET"
-	OpDeleteBucket S3Operation = "DELETE_BUCKET"
-	OpHeadBucket   S3Operation = "HEAD_BUCKET"
-	OpUnknown      S3Operation = "UNKNOWN"
+	OpGetObject      S3Operation = "GET_OBJECT"
+	OpGetObjectRange S3Operation = "GET_OBJECT_RANGE"
+	OpPutObject      S3Operation = "PUT_OBJECT"
+	OpCopyObject     S3Operation = "COPY_OBJECT"
+	OpDeleteObject   S3Operation = "DELETE_OBJECT"
+	OpDeleteObjects  S3Operation = "DELETE_OBJECTS"
+	OpHeadObject     S3Operation = "HEAD_OBJECT"
+	OpListObjects    S3Operation = "LIST_OBJECTS"
+	OpListPrefix     S3Operation = "LIST_PREFIX"
+	OpListBuckets    S3Operation = "LIST_BUCKETS"
+	OpMPUCreate      S3Operation = "MPU_CREATE"
+	OpMPUPart        S3Operation = "MPU_PART"
+	OpMPUComplete    S3Operation = "MPU_COMPLETE"
+	OpMPUAbort       S3Operation = "MPU_ABORT"
+	OpMPUList        S3Operation = "MPU_LIST"
+	OpMPUListParts   S3Operation = "MPU_LIST_PARTS"
+	OpCreateBucket   S3Operation = "CREATE_BUCKET"
+	OpDeleteBucket   S3Operation = "DELETE_BUCKET"
+	OpHeadBucket     S3Operation = "HEAD_BUCKET"
+	OpBucketConfig   S3Operation = "BUCKET_CONFIG"
+	OpUnknown        S3Operation = "UNKNOWN"
 )
 
-// isBucketOnlyPath returns true if the path contains only a bucket name
-// (single path segment with no key), after stripping the query string.
-func isBucketOnlyPath(path string) bool {
-	if idx := strings.Index(path, "?"); idx != -1 {
-		path = path[:idx]
+// listParams are query parameters that mark a bucket GET as a listing
+// (ListObjects v1/v2, ListObjectVersions) rather than a bucket
+// sub-resource read such as ?location or ?versioning.
+var listParams = []string{
+	"list-type", "prefix", "delimiter", "marker", "max-keys", "encoding-type",
+	"continuation-token", "start-after", "fetch-owner", "versions",
+}
+
+// splitPath splits a request target into its path and the set of
+// (lowercased) query parameter names.
+func splitPath(target string) (path string, params map[string]bool) {
+	path = target
+	params = map[string]bool{}
+	idx := strings.Index(target, "?")
+	if idx == -1 {
+		return path, params
 	}
+	path = target[:idx]
+	for _, kv := range strings.Split(target[idx+1:], "&") {
+		if kv == "" {
+			continue
+		}
+		if eq := strings.Index(kv, "="); eq != -1 {
+			kv = kv[:eq]
+		}
+		params[strings.ToLower(kv)] = true
+	}
+	return path, params
+}
+
+// isBucketOnlyPath returns true if the path contains only a bucket name
+// (single path segment with no key). The query string must already be
+// stripped.
+func isBucketOnlyPath(path string) bool {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	return len(parts) == 1 && parts[0] != ""
 }
 
-// DetectS3Operation determines the S3 operation from method and path.
-func DetectS3Operation(method, path string) S3Operation {
-	pathLower := strings.ToLower(path)
+// DetectS3Operation determines the S3 operation from method and path,
+// assuming path-style addressing (/bucket/key).
+func DetectS3Operation(method, target string) S3Operation {
+	path, params := splitPath(target)
+	root := path == "" || path == "/"
+	bucketOnly := isBucketOnlyPath(path)
 
 	switch HTTPMethod(method) {
 	case MethodGET:
-		if strings.Contains(pathLower, "list-type=") || strings.Contains(pathLower, "prefix=") {
+		switch {
+		case params["list-type"]:
 			return OpListPrefix
-		}
-		if strings.HasSuffix(path, "/") || path == "" {
-			return OpListObjects
+		case root:
+			// Path-style: a GET of / lists buckets, whatever its
+			// parameters (max-buckets, continuation-token, prefix, x-id).
+			return OpListBuckets
+		case params["uploads"]:
+			return OpMPUList
+		case params["uploadid"]:
+			return OpMPUListParts
+		case params["prefix"]:
+			return OpListPrefix
+		case bucketOnly || strings.HasSuffix(path, "/"):
+			if len(params) == 0 || hasAny(params, listParams) {
+				return OpListObjects
+			}
+			return OpBucketConfig
 		}
 		return OpGetObject
 
 	case MethodPUT:
-		if strings.Contains(pathLower, "partnumber=") {
+		if params["partnumber"] {
 			return OpMPUPart
 		}
-		if isBucketOnlyPath(path) {
-			return OpCreateBucket
+		if bucketOnly {
+			if len(params) == 0 {
+				return OpCreateBucket
+			}
+			return OpBucketConfig
 		}
 		return OpPutObject
 
 	case MethodPOST:
-		if strings.Contains(pathLower, "?uploads") {
+		switch {
+		case params["uploads"]:
 			return OpMPUCreate
-		}
-		if strings.Contains(pathLower, "uploadid=") && !strings.Contains(pathLower, "partnumber=") {
+		case params["uploadid"]:
 			return OpMPUComplete
+		case params["delete"]:
+			return OpDeleteObjects
 		}
 		return OpUnknown
 
 	case MethodDELETE:
-		if strings.Contains(pathLower, "uploadid=") {
+		if params["uploadid"] {
 			return OpMPUAbort
 		}
-		if isBucketOnlyPath(path) {
-			return OpDeleteBucket
+		if bucketOnly {
+			if len(params) == 0 {
+				return OpDeleteBucket
+			}
+			return OpBucketConfig
 		}
 		return OpDeleteObject
 
 	case MethodHEAD:
-		if isBucketOnlyPath(path) {
+		if bucketOnly {
 			return OpHeadBucket
 		}
 		return OpHeadObject
 	}
 
 	return OpUnknown
+}
+
+// ClassifyRequest refines DetectS3Operation with header information:
+// a GET with a Range header is a ranged read, and a PUT carrying
+// x-amz-copy-source is a server-side copy.
+func ClassifyRequest(r Request) S3Operation {
+	op := DetectS3Operation(r.Method, r.Path)
+	switch {
+	case op == OpGetObject && r.Range != "":
+		return OpGetObjectRange
+	case op == OpPutObject && r.CopySource:
+		return OpCopyObject
+	}
+	return op
+}
+
+func hasAny(params map[string]bool, names []string) bool {
+	for _, n := range names {
+		if params[n] {
+			return true
+		}
+	}
+	return false
 }

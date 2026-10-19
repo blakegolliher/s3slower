@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/s3slower/s3slower/internal/event"
 	"github.com/s3slower/s3slower/internal/metrics"
@@ -140,4 +141,26 @@ func TestHandleEventMergesPartialExtraLabels(t *testing.T) {
 	}
 
 	assert.NotPanics(t, func() { r.handleEvent(evt) })
+}
+
+// TestReservedTargetLabelsDoNotPanic covers a target prom_label named like
+// a built-in label (here bucket, which is not opted in).
+func TestReservedTargetLabelsDoNotPanic(t *testing.T) {
+	assert.Equal(t, []string{"team"}, filterReservedLabels([]string{"bucket", "comm", "team"}))
+
+	cfg := DefaultConfig()
+	cfg.EnablePrometheus = true
+	cfg.EnableLogging = false
+	cfg.EnableTerminal = false
+	cfg.PrometheusPort = 0
+	r, err := New(cfg)
+	require.NoError(t, err)
+	defer r.Close()
+	r.extraLabelKeys = filterReservedLabels([]string{"bucket"})
+	r.targetLabels = map[uint32]map[string]string{7: {"bucket": "from-target"}}
+
+	assert.NotPanics(t, func() {
+		r.handleEvent(&event.S3Event{PID: 7, Comm: "aws", ClientType: "awscli", Method: "GET",
+			Operation: "GET_OBJECT", Bucket: "b", Path: "/b/k", IsS3Traffic: true, StatusCode: 200})
+	})
 }

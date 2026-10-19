@@ -132,6 +132,7 @@ func TestHandleEvent(t *testing.T) {
 		evt := &event.S3Event{
 			Timestamp:    time.Now(),
 			Method:       "GET",
+			Operation:    "GET_OBJECT",
 			Bucket:       "my-bucket",
 			Endpoint:     "s3.us-east-1",
 			ResponseSize: 1024,
@@ -404,4 +405,46 @@ func BenchmarkHandleEvent(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		r.handleEvent(evt)
 	}
+}
+
+// TestWatchFilter tests that --watch restricts reported events to the
+// named processes or client labels.
+func TestWatchFilter(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := DefaultConfig()
+	cfg.EnableLogging = false
+	cfg.WatchProcesses = []string{"python3", "a-very-long-process-name"}
+	r, err := New(cfg)
+	require.NoError(t, err)
+	defer r.Close()
+	r.terminal = terminal.NewWriter(&buf, terminal.OutputModeSimple, 50)
+
+	send := func(comm, client, path string) {
+		r.handleEvent(&event.S3Event{
+			Timestamp: time.Now(), Comm: comm, ClientType: client, Method: "GET",
+			Operation: "GET_OBJECT", Bucket: "b", Path: path, IsS3Traffic: true,
+		})
+	}
+	send("python3", "boto3", "/b/kept-by-comm")
+	send("a-very-long-pro", "a-very-long-pro", "/b/kept-truncated")
+	send("aws", "awscli", "/b/dropped")
+
+	out := buf.String()
+	assert.Contains(t, out, "kept-by-comm")
+	assert.Contains(t, out, "kept-truncated")
+	assert.NotContains(t, out, "dropped")
+
+	buf.Reset()
+	r.watch = map[string]bool{"awscli": true}
+	send("aws", "awscli", "/b/kept-by-client-label")
+	assert.Contains(t, buf.String(), "kept-by-client-label")
+
+	// A named worker thread matches through the process name.
+	buf.Reset()
+	r.watch = map[string]bool{"java": true}
+	r.handleEvent(&event.S3Event{
+		Timestamp: time.Now(), Comm: "pool-1-thread-7", Process: "java", ClientType: "java",
+		Method: "GET", Operation: "GET_OBJECT", Bucket: "b", Path: "/b/kept-by-process", IsS3Traffic: true,
+	})
+	assert.Contains(t, buf.String(), "kept-by-process")
 }
