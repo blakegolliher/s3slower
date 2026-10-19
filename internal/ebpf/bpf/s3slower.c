@@ -92,9 +92,12 @@ struct {
     __type(value, __u64);
 } config_map SEC(".maps");
 
-// Request tracking map (key: pid<<32|fd)
+// Request tracking map (key: pid<<32 | fd, tid or Go conn id).
+// LRU so entries that are never completed (a process exits with a request
+// in flight, a missed response) are evicted instead of filling the map,
+// which would stop all tracking.
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 10240);
     __type(key, __u64);
     __type(value, struct req_info_t);
@@ -123,13 +126,32 @@ struct {
     __type(value, struct req_info_t);
 } req_heap SEC(".maps");
 
-// Saves buffer pointers from read entry probes for return probes.
+// Saves buffer pointers from read entry probes for return probes, keyed by
+// pid_tgid. LRU for the same reason as req_map; entries of exiting threads
+// are also removed by tracepoint_exit.
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 10240);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
     __type(key, __u64);
     __type(value, struct read_args_t);
 } read_args_map SEC(".maps");
+
+// Go TLS reads in progress, keyed by goroutine instead of thread: a
+// goroutine blocked in crypto/tls.(*Conn).Read is often resumed on another
+// OS thread, and many connections' read loops share a few threads, so a
+// thread-keyed entry would be matched to the wrong Read return or none.
+struct go_read_key_t {
+    __u64 g;    // current goroutine: R14 in Go's register-based ABI
+    __u32 pid;
+    __u32 _pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct go_read_key_t);
+    __type(value, struct read_args_t);
+} go_read_args SEC(".maps");
 
 // Exec notification for dynamic Go TLS binary discovery.
 // Sends PID to userspace on every execve so it can check
@@ -737,7 +759,7 @@ int uprobe_go_tls_read(struct pt_regs *ctx) {
     if (should_filter_pid(pid))
         return 0;
 
-    // Go ABI: RAX = *Conn, RBX = output buffer pointer
+    // Go ABI: RAX = *Conn, RBX = output buffer pointer, R14 = goroutine
     __u32 conn_id = (__u32)ctx->ax;
     const char *buf = (const char *)ctx->bx;
 
@@ -750,7 +772,11 @@ int uprobe_go_tls_read(struct pt_regs *ctx) {
     args.buf_ptr = (__u64)buf;
     args.fd = conn_id;  // Carry conn_id to return probe
     args.source = READ_SRC_UPROBE;
-    bpf_map_update_elem(&read_args_map, &pid_tgid, &args, BPF_ANY);
+
+    struct go_read_key_t key = {};
+    key.g = ctx->r14;
+    key.pid = pid;
+    bpf_map_update_elem(&go_read_args, &key, &args, BPF_ANY);
     return 0;
 }
 
@@ -762,16 +788,18 @@ int uretprobe_go_tls_read(struct pt_regs *ctx) {
     if (should_filter_pid(pid))
         return 0;
 
-    struct read_args_t *args = bpf_map_lookup_elem(&read_args_map, &pid_tgid);
+    // R14 still holds the goroutine at Read's RET instructions, whichever
+    // thread the goroutine is running on now.
+    struct go_read_key_t key = {};
+    key.g = ctx->r14;
+    key.pid = pid;
+    struct read_args_t *args = bpf_map_lookup_elem(&go_read_args, &key);
     if (!args)
-        return 0;
-
-    if (args->source != READ_SRC_UPROBE)
         return 0;
 
     __u64 buf_ptr = args->buf_ptr;
     __u32 conn_id = args->fd;  // Retrieve conn_id saved at Read entry
-    bpf_map_delete_elem(&read_args_map, &pid_tgid);
+    bpf_map_delete_elem(&go_read_args, &key);
 
     // Go ABI: RAX = bytes read (same register as C return value)
     int ret = (int)PT_REGS_RC(ctx);
@@ -796,5 +824,22 @@ int tracepoint_exec(void *ctx) {
     struct exec_event_t event = {};
     event.pid = bpf_get_current_pid_tgid() >> 32;
     bpf_perf_event_output(ctx, &exec_events, BPF_F_CURRENT_CPU, &event, sizeof(event));
+    return 0;
+}
+
+// ========== Thread Exit Cleanup ==========
+// Fires for every exiting thread. A thread that exits inside a TLS read
+// (e.g. an idle keep-alive reader when a short-lived CLI exits) never runs
+// the return probe, so drop its per-thread state here. fd- and
+// connection-keyed requests cannot be found by thread; LRU eviction
+// handles those.
+
+SEC("tracepoint/sched/sched_process_exit")
+int tracepoint_exit(void *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+
+    bpf_map_delete_elem(&read_args_map, &pid_tgid);
+    // TLS-library requests are keyed pid<<32|tid, which is pid_tgid.
+    bpf_map_delete_elem(&req_map, &pid_tgid);
     return 0;
 }

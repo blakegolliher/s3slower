@@ -485,6 +485,16 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 		return fmt.Errorf("failed to create perf reader: %w", err)
 	}
 
+	// Clean up per-thread tracking state when threads exit (non-fatal if
+	// the tracepoint is unavailable; the LRU maps still bound the state).
+	if prog, ok := t.collection.Programs["tracepoint_exit"]; ok {
+		if tp, err := link.Tracepoint("sched", "sched_process_exit", prog, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: thread-exit cleanup unavailable: %v\n", err)
+		} else {
+			t.links = append(t.links, tp)
+		}
+	}
+
 	t.reader = reader
 	t.callback = callback
 	t.running = true
