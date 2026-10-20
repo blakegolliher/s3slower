@@ -84,9 +84,10 @@ byte (p50/p99), PUT/part p99, error rate, and dropped events. "Events dropped
 PUTs (ingest), MPU parts (checkpoint), GET range (data loading), HEAD and
 DELETE. Read and write throughput are split by operation.
 
-**Latency.** Data-path latency shows p50 (dashed) and p99 per operation on a
-log scale; metadata operations have their own panel. The heatmap shows the
-whole latency distribution, so tail outliers stand out.
+**Latency.** GET, GET range, PUT and MPU part each have a panel with p99
+(solid), p90 (dashed) and p75 (dotted) on a log scale, so the width of the
+tail is visible at a glance; metadata operations share a p99 panel. The
+heatmap shows the whole latency distribution, so tail outliers stand out.
 
 **Per-operation table.** Every operation individually, with request count,
 rate, average payload (ranged reads ≈ 64 KiB, shards 1 MiB, parts 8 MiB),

@@ -47,7 +47,7 @@ operation, and the opt-in `bucket`/`endpoint` labels.
 |---------|-------|
 | Overview | Requests/s, read and write throughput, GET p50/p99 (time to first byte), PUT/part p99, error rate, events dropped |
 | Workload mix | Requests/s and requests in range by operation family; read and write throughput by family |
-| Latency | Data-path p50/p99 and metadata p99 (log scale); latency heatmap |
+| Latency | p75/p90/p99 for GET, GET range, PUT and MPU part, one panel each; metadata p99 (log scale); latency heatmap |
 | Per-operation detail | Table of every operation: requests, rate, average payload, throughput, p50, p99, errors |
 | Clients | Requests/s, p99 and throughput per client |
 | Errors & HTTP status | Responses by status class; 4xx/5xx by operation and code |

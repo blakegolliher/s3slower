@@ -1815,8 +1815,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Data-path latency (p99 solid, p50 dashed)",
-      "description": "GET latency is time to first byte. PUT and MPU part latency runs from the request head to the response, so it includes uploading the body. Log scale.",
+      "title": "GET latency",
+      "description": "Time to first byte of full-object GETs. p99 solid, p90 dashed, p75 dotted. Log scale.",
       "id": 16,
       "datasource": {
         "type": "prometheus",
@@ -1824,7 +1824,7 @@
       },
       "gridPos": {
         "h": 9,
-        "w": 12,
+        "w": 6,
         "x": 0,
         "y": 24
       },
@@ -1835,7 +1835,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT\"}[$__rate_interval])))",
-          "legendFormat": "GET p99",
+          "legendFormat": "p99",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -1846,8 +1846,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT\"}[$__rate_interval])))",
-          "legendFormat": "GET p50",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT\"}[$__rate_interval])))",
+          "legendFormat": "p90",
           "refId": "B",
           "range": true,
           "instant": false,
@@ -1858,69 +1858,9 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT_RANGE\"}[$__rate_interval])))",
-          "legendFormat": "GET range p99",
+          "expr": "histogram_quantile(0.75, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT\"}[$__rate_interval])))",
+          "legendFormat": "p75",
           "refId": "C",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT_RANGE\"}[$__rate_interval])))",
-          "legendFormat": "GET range p50",
-          "refId": "D",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"PUT_OBJECT|COPY_OBJECT\"}[$__rate_interval])))",
-          "legendFormat": "PUT p99",
-          "refId": "E",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"PUT_OBJECT|COPY_OBJECT\"}[$__rate_interval])))",
-          "legendFormat": "PUT p50",
-          "refId": "F",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"MPU_PART\"}[$__rate_interval])))",
-          "legendFormat": "MPU part p99",
-          "refId": "G",
-          "range": true,
-          "instant": false,
-          "format": "time_series"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"MPU_PART\"}[$__rate_interval])))",
-          "legendFormat": "MPU part p50",
-          "refId": "H",
           "range": true,
           "instant": false,
           "format": "time_series"
@@ -1953,28 +1893,14 @@
           },
           "color": {
             "mode": "palette-classic"
-          }
+          },
+          "noValue": "\u2013"
         },
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "GET p99"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#3987e5"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "GET p50"
+              "options": "p99"
             },
             "properties": [
               {
@@ -1987,45 +1913,26 @@
               {
                 "id": "custom.lineStyle",
                 "value": {
-                  "fill": "dash",
-                  "dash": [
-                    6,
-                    4
-                  ]
+                  "fill": "solid"
                 }
               },
               {
                 "id": "custom.lineWidth",
-                "value": 1
+                "value": 2
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "GET range p99"
+              "options": "p90"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "mode": "fixed",
-                  "fixedColor": "#d95926"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "GET range p50"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#d95926"
+                  "fixedColor": "#3987e5"
                 }
               },
               {
@@ -2033,102 +1940,43 @@
                 "value": {
                   "fill": "dash",
                   "dash": [
-                    6,
+                    8,
                     4
                   ]
                 }
               },
               {
                 "id": "custom.lineWidth",
-                "value": 1
+                "value": 2
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "PUT p99"
+              "options": "p75"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "mode": "fixed",
-                  "fixedColor": "#199e70"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "PUT p50"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#199e70"
+                  "fixedColor": "#3987e5"
                 }
               },
               {
                 "id": "custom.lineStyle",
                 "value": {
-                  "fill": "dash",
+                  "fill": "dot",
                   "dash": [
-                    6,
-                    4
+                    0,
+                    6
                   ]
                 }
               },
               {
                 "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "MPU part p99"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#c98500"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "MPU part p50"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#c98500"
-                }
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    6,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
+                "value": 2
               }
             ]
           }
@@ -2137,7 +1985,562 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GET range latency",
+      "description": "Time to first byte of ranged GETs. p99 solid, p90 dashed, p75 dotted. Log scale.",
+      "id": 17,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 6,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT_RANGE\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT_RANGE\"}[$__rate_interval])))",
+          "legendFormat": "p90",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.75, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"GET_OBJECT_RANGE\"}[$__rate_interval])))",
+          "legendFormat": "p75",
+          "refId": "C",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "lineInterpolation": "smooth",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisBorderShow": false,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "\u2013"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p90"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [
+                    0,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "PUT latency",
+      "description": "From the request head to the response, so it includes uploading the body. Includes CopyObject. p99 solid, p90 dashed, p75 dotted. Log scale.",
+      "id": 18,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 12,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"PUT_OBJECT|COPY_OBJECT\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"PUT_OBJECT|COPY_OBJECT\"}[$__rate_interval])))",
+          "legendFormat": "p90",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.75, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"PUT_OBJECT|COPY_OBJECT\"}[$__rate_interval])))",
+          "legendFormat": "p75",
+          "refId": "C",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "lineInterpolation": "smooth",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisBorderShow": false,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "\u2013"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p90"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [
+                    0,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "MPU part latency",
+      "description": "From the request head to the response, so it includes uploading the part. p99 solid, p90 dashed, p75 dotted. Log scale.",
+      "id": 19,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 18,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"MPU_PART\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"MPU_PART\"}[$__rate_interval])))",
+          "legendFormat": "p90",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.75, sum by (le) (rate(s3slower_request_duration_ms_bucket{instance=~\"$instance\", comm=~\"$comm\", s3_operation=~\"$s3_operation\", bucket=~\"$bucket\", endpoint=~\"$endpoint\", s3_operation=~\"MPU_PART\"}[$__rate_interval])))",
+          "legendFormat": "p75",
+          "refId": "C",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "lineInterpolation": "smooth",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisBorderShow": false,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "\u2013"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#c98500"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p90"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#c98500"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#c98500"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dot",
+                  "dash": [
+                    0,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "mean",
@@ -2154,7 +2557,7 @@
       "type": "timeseries",
       "title": "Metadata latency (p99)",
       "description": "99th percentile latency of metadata operations. DELETE includes batch DeleteObjects. Log scale.",
-      "id": 17,
+      "id": 20,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -2162,8 +2565,8 @@
       "gridPos": {
         "h": 9,
         "w": 12,
-        "x": 12,
-        "y": 24
+        "x": 0,
+        "y": 33
       },
       "targets": [
         {
@@ -2353,16 +2756,16 @@
     {
       "type": "heatmap",
       "title": "Latency distribution (all requests)",
-      "id": 18,
+      "id": 21,
       "description": "Requests per latency bucket over time. Brighter cells hold more requests.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
+        "h": 9,
+        "w": 12,
+        "x": 12,
         "y": 33
       },
       "targets": [
@@ -2436,19 +2839,19 @@
       "type": "row",
       "title": "Per-operation detail",
       "collapsed": false,
-      "id": 19,
+      "id": 22,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 42
       },
       "panels": []
     },
     {
       "type": "table",
       "title": "Per-operation summary (selected time range)",
-      "id": 20,
+      "id": 23,
       "description": "Every S3 operation individually. GET latency is time to first byte; PUT/part latency includes the upload. Avg payload is body bytes per request.",
       "datasource": {
         "type": "prometheus",
@@ -2458,7 +2861,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 43
       },
       "targets": [
         {
@@ -2775,12 +3178,12 @@
       "type": "row",
       "title": "Clients",
       "collapsed": false,
-      "id": 21,
+      "id": 24,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 56
       },
       "panels": []
     },
@@ -2788,7 +3191,7 @@
       "type": "timeseries",
       "title": "Requests / s by client",
       "description": "Client = well-known tool (awscli, boto3, elbencho, ...) or the process name.",
-      "id": 22,
+      "id": 25,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -2797,7 +3200,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 56
+        "y": 57
       },
       "targets": [
         {
@@ -2985,7 +3388,7 @@
       "type": "timeseries",
       "title": "p99 latency by client",
       "description": "Across all operations, so a client doing large uploads reads higher. Log scale.",
-      "id": 23,
+      "id": 26,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -2994,7 +3397,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 56
+        "y": 57
       },
       "targets": [
         {
@@ -3182,7 +3585,7 @@
       "type": "timeseries",
       "title": "Throughput by client",
       "description": "Upload + download payload bytes per second.",
-      "id": 24,
+      "id": 27,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -3191,7 +3594,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 56
+        "y": 57
       },
       "targets": [
         {
@@ -3379,12 +3782,12 @@
       "type": "row",
       "title": "Errors & HTTP status",
       "collapsed": false,
-      "id": 25,
+      "id": 28,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 64
+        "y": 65
       },
       "panels": []
     },
@@ -3392,7 +3795,7 @@
       "type": "timeseries",
       "title": "Responses / s by status class",
       "description": "HTTP responses per second, grouped by status class.",
-      "id": 26,
+      "id": 29,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -3401,7 +3804,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 66
       },
       "targets": [
         {
@@ -3565,7 +3968,7 @@
       "type": "timeseries",
       "title": "Errors / s by operation and status",
       "description": "4xx/5xx responses by operation, e.g. 404 on HEAD (missing key) or 503 SlowDown.",
-      "id": 27,
+      "id": 30,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -3574,7 +3977,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 65
+        "y": 66
       },
       "targets": [
         {
@@ -3642,12 +4045,12 @@
       "type": "row",
       "title": "Tracer health",
       "collapsed": false,
-      "id": 28,
+      "id": 31,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 73
+        "y": 74
       },
       "panels": []
     },
@@ -3655,7 +4058,7 @@
       "type": "stat",
       "title": "Exporter",
       "description": "Whether Prometheus can scrape s3slower.",
-      "id": 29,
+      "id": 32,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -3664,7 +4067,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 74
+        "y": 75
       },
       "targets": [
         {
@@ -3738,7 +4141,7 @@
       "type": "timeseries",
       "title": "Dropped events / s by reason",
       "description": "perf_lost: kernel ring overflow (raise --perf-buffer-kb). channel_full: userspace back-pressure.",
-      "id": 30,
+      "id": 33,
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -3747,7 +4150,7 @@
         "h": 5,
         "w": 20,
         "x": 4,
-        "y": 74
+        "y": 75
       },
       "targets": [
         {

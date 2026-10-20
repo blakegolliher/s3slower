@@ -34,6 +34,14 @@ ALL_FAMILY_RE = "|".join(f[1] for f in FAMILIES)
 DATA_FAMILIES = FAMILIES[:4]
 META_FAMILIES = FAMILIES[4:]
 
+# Percentiles on the data-path latency panels: (quantile, legend, line style,
+# line width), top line first.
+DATA_PERCENTILES = [
+    (0.99, "p99", {"fill": "solid"}, 2),
+    (0.90, "p90", {"fill": "dash", "dash": [8, 4]}, 2),
+    (0.75, "p75", {"fill": "dot", "dash": [0, 6]}, 2),
+]
+
 # Reserved status colors (never used for series identity).
 GOOD, WARNING, SERIOUS, CRITICAL, NEUTRAL = "#0ca30c", "#fab219", "#ec835a", "#d03b3b", "#8a8983"
 
@@ -232,34 +240,39 @@ def build():
 
     # ---------------- Latency ----------------
     panels.append(row("Latency", y)); y += 1
-    dp_targets, r = [], refs()
-    for name, regex, _ in DATA_FAMILIES:
-        dp_targets.append(target(q(0.99, fam_sel(regex)), f"{name} p99", next(r)))
-        dp_targets.append(target(q(0.5, fam_sel(regex)), f"{name} p50", next(r)))
-    dp_over = []
-    for name, _, color in DATA_FAMILIES:
-        dp_over.append(color_override(f"{name} p99", color))
-        dp_over.append({"matcher": {"id": "byName", "options": f"{name} p50"},
-                        "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": color}},
-                                       {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [6, 4]}},
-                                       {"id": "custom.lineWidth", "value": 1}]})
-    panels.append(timeseries(
-        "Data-path latency (p99 solid, p50 dashed)", dp_targets,
-        {"h": 9, "w": 12, "x": 0, "y": y}, "ms",
-        "GET latency is time to first byte. PUT and MPU part latency runs from the request "
-        "head to the response, so it includes uploading the body. Log scale.",
-        log=True, overrides=dp_over, legend_calcs=("mean", "max")))
+    # Data-path latency as small multiples, one panel per family: the family
+    # color carries identity, line style carries the percentile.
+    dp_desc = {
+        "GET": "Time to first byte of full-object GETs.",
+        "GET range": "Time to first byte of ranged GETs.",
+        "PUT": "From the request head to the response, so it includes uploading the body. Includes CopyObject.",
+        "MPU part": "From the request head to the response, so it includes uploading the part.",
+    }
+    for i, (name, regex, color) in enumerate(DATA_FAMILIES):
+        dp_targets, dp_over, r = [], [], refs()
+        for p, label, style, width in DATA_PERCENTILES:
+            dp_targets.append(target(q(p, fam_sel(regex)), label, next(r)))
+            dp_over.append({"matcher": {"id": "byName", "options": label},
+                            "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": color}},
+                                           {"id": "custom.lineStyle", "value": style},
+                                           {"id": "custom.lineWidth", "value": width}]})
+        panel = timeseries(
+            f"{name} latency", dp_targets, {"h": 9, "w": 6, "x": 6 * i, "y": y}, "ms",
+            dp_desc[name] + " p99 solid, p90 dashed, p75 dotted. Log scale.",
+            log=True, overrides=dp_over, legend_calcs=("mean", "max"), no_value="–")
+        panel["options"]["legend"]["placement"] = "bottom"
+        panels.append(panel)
+    y += 9
     panels.append(timeseries(
         "Metadata latency (p99)",
         family_targets(lambda s: q(0.99, s), META_FAMILIES, True, " p99"),
-        {"h": 9, "w": 12, "x": 12, "y": y}, "ms",
+        {"h": 9, "w": 12, "x": 0, "y": y}, "ms",
         "99th percentile latency of metadata operations. DELETE includes batch DeleteObjects. Log scale.",
         log=True, overrides=family_overrides(META_FAMILIES, True, " p99"), legend_calcs=("mean", "max")))
-    y += 9
     panels.append({
         "type": "heatmap", "title": "Latency distribution (all requests)", "id": nid(),
         "description": "Requests per latency bucket over time. Brighter cells hold more requests.",
-        "datasource": DS, "gridPos": {"h": 8, "w": 24, "x": 0, "y": y},
+        "datasource": DS, "gridPos": {"h": 9, "w": 12, "x": 12, "y": y},
         "targets": [target(f"sum by (le) (increase(s3slower_request_duration_ms_bucket{{{F}}}[{RI}]))",
                            "{{le}}", fmt="heatmap")],
         "fieldConfig": {"defaults": {"custom": {"scaleDistribution": {"type": "linear"},
@@ -276,7 +289,7 @@ def build():
             "exemplars": {"color": "rgba(255,0,255,0.7)"},
         },
     })
-    y += 8
+    y += 9
 
     # ---------------- Per-operation table ----------------
     panels.append(row("Per-operation detail", y)); y += 1
