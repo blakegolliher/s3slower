@@ -71,7 +71,7 @@ start() {
     launch mixed python3 demo/mixed_workload.py "${ssl[@]}" --process-name train-loader \
         --prefix s3slower-demo/mixed
     launch pipeline python3 demo/ai_pipeline_workload.py "${ssl[@]}" --prefix s3slower-demo/pipeline \
-        --shards 150 --reads 300 --ckpts 1 --pause 45
+        --shards 150 --reads 300 --ckpts 1 --misses 1 --pause 45
     S3_PREFIX=s3slower-demo/awscli SHARDS=30 CKPT_MIB=64 PAUSE=30 launch awscli demo/awscli_workload.sh
     local plain="${HTTP_ENDPOINT:-$S3_ENDPOINT}"
     ELBENCHO_ENDPOINT="$plain" S3_PREFIX=s3slower-demo/elbencho launch elbencho demo/elbencho_bursts.sh

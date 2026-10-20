@@ -34,6 +34,13 @@ type bpfEventT struct {
 	_               [4]byte
 }
 
+type bpfGoReadKeyT struct {
+	_   structs.HostLayout
+	G   uint64
+	Pid uint32
+	Pad uint32
+}
+
 type bpfReadArgsT struct {
 	_            structs.HostLayout
 	BufPtr       uint64
@@ -105,6 +112,7 @@ type bpfProgramSpecs struct {
 	KretprobeSysRead     *ebpf.ProgramSpec `ebpf:"kretprobe_sys_read"`
 	KretprobeSysRecvfrom *ebpf.ProgramSpec `ebpf:"kretprobe_sys_recvfrom"`
 	TracepointExec       *ebpf.ProgramSpec `ebpf:"tracepoint_exec"`
+	TracepointExit       *ebpf.ProgramSpec `ebpf:"tracepoint_exit"`
 	UprobeGnutlsRecv     *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_recv"`
 	UprobeGnutlsSend     *ebpf.ProgramSpec `ebpf:"uprobe_gnutls_send"`
 	UprobeGoTlsRead      *ebpf.ProgramSpec `ebpf:"uprobe_go_tls_read"`
@@ -129,6 +137,7 @@ type bpfMapSpecs struct {
 	EventHeap   *ebpf.MapSpec `ebpf:"event_heap"`
 	Events      *ebpf.MapSpec `ebpf:"events"`
 	ExecEvents  *ebpf.MapSpec `ebpf:"exec_events"`
+	GoReadArgs  *ebpf.MapSpec `ebpf:"go_read_args"`
 	ReadArgsMap *ebpf.MapSpec `ebpf:"read_args_map"`
 	ReqHeap     *ebpf.MapSpec `ebpf:"req_heap"`
 	ReqMap      *ebpf.MapSpec `ebpf:"req_map"`
@@ -164,6 +173,7 @@ type bpfMaps struct {
 	EventHeap   *ebpf.Map `ebpf:"event_heap"`
 	Events      *ebpf.Map `ebpf:"events"`
 	ExecEvents  *ebpf.Map `ebpf:"exec_events"`
+	GoReadArgs  *ebpf.Map `ebpf:"go_read_args"`
 	ReadArgsMap *ebpf.Map `ebpf:"read_args_map"`
 	ReqHeap     *ebpf.Map `ebpf:"req_heap"`
 	ReqMap      *ebpf.Map `ebpf:"req_map"`
@@ -175,6 +185,7 @@ func (m *bpfMaps) Close() error {
 		m.EventHeap,
 		m.Events,
 		m.ExecEvents,
+		m.GoReadArgs,
 		m.ReadArgsMap,
 		m.ReqHeap,
 		m.ReqMap,
@@ -198,6 +209,7 @@ type bpfPrograms struct {
 	KretprobeSysRead     *ebpf.Program `ebpf:"kretprobe_sys_read"`
 	KretprobeSysRecvfrom *ebpf.Program `ebpf:"kretprobe_sys_recvfrom"`
 	TracepointExec       *ebpf.Program `ebpf:"tracepoint_exec"`
+	TracepointExit       *ebpf.Program `ebpf:"tracepoint_exit"`
 	UprobeGnutlsRecv     *ebpf.Program `ebpf:"uprobe_gnutls_recv"`
 	UprobeGnutlsSend     *ebpf.Program `ebpf:"uprobe_gnutls_send"`
 	UprobeGoTlsRead      *ebpf.Program `ebpf:"uprobe_go_tls_read"`
@@ -223,6 +235,7 @@ func (p *bpfPrograms) Close() error {
 		p.KretprobeSysRead,
 		p.KretprobeSysRecvfrom,
 		p.TracepointExec,
+		p.TracepointExit,
 		p.UprobeGnutlsRecv,
 		p.UprobeGnutlsSend,
 		p.UprobeGoTlsRead,

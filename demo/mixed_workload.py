@@ -3,9 +3,10 @@
 
 Worker threads pick weighted-random S3 operations against a bounded working
 set under --prefix: PUTs of mixed sizes, multipart uploads, server-side
-copies, full and ranged GETs, HEADs (some for absent keys), paginated LISTs,
-single and batch deletes, aborted multipart uploads, and the occasional GET
-of a missing key. Every 1-3 minutes the mix shifts to a new scenario
+copies, full and ranged GETs, HEADs, paginated LISTs, single and batch
+deletes, and aborted multipart uploads. A small share of HEADs (--head-miss)
+and full GETs (--get-miss) ask for keys that do not exist, so 404s show up
+as they do in real pipelines. Every 1-3 minutes the mix shifts to a new scenario
 (ingest, training, checkpoint, evaluation, compaction, mixed) and the load
 level drifts, so every panel keeps moving.
 
@@ -24,6 +25,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from contextlib import contextmanager
 
 import boto3
 from boto3.s3.transfer import TransferConfig
@@ -34,28 +36,33 @@ KiB, MiB = 1024, 1024 * 1024
 
 # Operation weights per scenario. Absent keys mean weight 0.
 SCENARIOS = {
-    "ingest": dict(put=40, mpu=6, list=6, head=8, get=5, get_range=10, delete=5,
-                   delete_batch=2, copy=2, head_miss=4, mpu_abort=1),
-    "training": dict(get_range=45, get=20, head=10, list=6, put=6, head_miss=3,
-                     get_miss=1, delete=3, delete_batch=1, mpu=1),
-    "checkpoint": dict(mpu=18, put=15, copy=6, get_range=20, get=10, head=10, list=6,
-                       delete=6, mpu_abort=3, head_miss=6),
-    "evaluation": dict(get=35, get_range=25, head=15, head_miss=8, get_miss=3, list=8,
-                       put=4, delete=2),
+    "ingest": dict(put=40, mpu=6, list=6, head=12, get=5, get_range=10, delete=5,
+                   delete_batch=2, copy=2, mpu_abort=1),
+    "training": dict(get_range=45, get=21, head=13, list=6, put=6, delete=3,
+                     delete_batch=1, mpu=1),
+    "checkpoint": dict(mpu=18, put=15, copy=6, get_range=20, get=10, head=16, list=6,
+                       delete=6, mpu_abort=3),
+    "evaluation": dict(get=38, get_range=25, head=23, list=8, put=4, delete=2),
     "compaction": dict(list=15, get=15, put=20, copy=10, delete=18, delete_batch=6,
-                       head=8, get_range=6, head_miss=2),
-    "mixed": dict(get=15, get_range=20, put=15, mpu=4, copy=3, head=12, head_miss=4,
-                  get_miss=1, list=8, delete=8, delete_batch=2, mpu_abort=1),
+                       head=10, get_range=6),
+    "mixed": dict(get=16, get_range=20, put=15, mpu=4, copy=3, head=16, list=8,
+                  delete=8, delete_batch=2, mpu_abort=1),
 }
 DIRS = [f"data/part-{i:02d}" for i in range(16)] + ["eval", "features"]
 
 
 class Registry:
-    """Thread-safe set of objects the workload has written."""
+    """Thread-safe set of objects the workload has written.
+
+    Readers borrow an object for the duration of a request; deletes only
+    take objects nobody is reading, so reads never race a delete into an
+    unintended 404.
+    """
 
     def __init__(self):
         self.lock = threading.Lock()
         self.keys, self.index, self.sizes = [], {}, {}
+        self.busy = Counter()
         self.bytes = 0
 
     def add(self, key, size):
@@ -67,21 +74,35 @@ class Registry:
             self.sizes[key] = size
             self.bytes += size
 
-    def pick(self, remove=False):
+    @contextmanager
+    def using(self):
+        """Borrow a random object: yields (key, size), or (None, 0) if empty."""
         with self.lock:
             if not self.keys:
-                return None, 0
-            key = random.choice(self.keys)
-            size = self.sizes[key]
-            if remove:
-                self._remove(key)
-            return key, size
+                key, size = None, 0
+            else:
+                key = random.choice(self.keys)
+                size = self.sizes[key]
+                self.busy[key] += 1
+        try:
+            yield key, size
+        finally:
+            if key is not None:
+                with self.lock:
+                    self.busy[key] -= 1
+                    if not self.busy[key]:
+                        del self.busy[key]
 
     def take(self, n):
+        """Remove and return up to n random objects that nobody is reading."""
         with self.lock:
             out = []
-            for _ in range(min(n, len(self.keys))):
+            for _ in range(min(n, len(self.keys)) * 2):
+                if len(out) >= n or not self.keys:
+                    break
                 key = random.choice(self.keys)
+                if self.busy[key]:
+                    continue
                 out.append(key)
                 self._remove(key)
             return out
@@ -160,26 +181,31 @@ class Workload:
             self.s3.abort_multipart_upload(Bucket=self.args.bucket, Key=k, UploadId=up["UploadId"])
 
     def op_copy(self):
-        src, size = self.reg.pick()
-        if src is None:
-            return self.op_put()
-        k = self.key(random.choice(["eval", "features"]))
-        self.s3.copy_object(Bucket=self.args.bucket, Key=k,
-                            CopySource={"Bucket": self.args.bucket, "Key": src})
+        with self.reg.using() as (src, size):
+            if src is None:
+                return self.op_put()
+            k = self.key(random.choice(["eval", "features"]))
+            self.s3.copy_object(Bucket=self.args.bucket, Key=k,
+                                CopySource={"Bucket": self.args.bucket, "Key": src})
         self.reg.add(k, size)
 
     def op_get(self):
-        k, size = self.reg.pick()
-        if k is None:
-            return self.op_put()
-        if size > 32 * MiB:  # whole-object reads of large checkpoints go ranged instead
-            return self.op_get_range()
-        self.s3.get_object(Bucket=self.args.bucket, Key=k)["Body"].read()
+        if random.random() < self.args.get_miss:
+            return self.op_get_miss()
+        with self.reg.using() as (k, size):
+            if k is None:
+                return self.op_put()
+            if size > 32 * MiB:  # whole-object reads of large checkpoints go ranged instead
+                return self.ranged_read(k, size)
+            self.s3.get_object(Bucket=self.args.bucket, Key=k)["Body"].read()
 
     def op_get_range(self):
-        k, size = self.reg.pick()
-        if k is None:
-            return self.op_put()
+        with self.reg.using() as (k, size):
+            if k is None:
+                return self.op_put()
+            self.ranged_read(k, size)
+
+    def ranged_read(self, k, size):
         if random.random() < 0.2:
             rng = f"bytes=-{min(size, random.choice([8 * KiB, 64 * KiB]))}"  # footer read
         else:
@@ -189,16 +215,18 @@ class Workload:
         self.s3.get_object(Bucket=self.args.bucket, Key=k, Range=rng)["Body"].read()
 
     def op_head(self):
-        k, _ = self.reg.pick()
-        if k is None:
+        if random.random() < self.args.head_miss:
             return self.op_head_miss()
-        self.s3.head_object(Bucket=self.args.bucket, Key=k)
+        with self.reg.using() as (k, _):
+            if k is None:
+                return self.op_put()
+            self.s3.head_object(Bucket=self.args.bucket, Key=k)
 
     def op_head_miss(self):
         try:
             self.s3.head_object(Bucket=self.args.bucket, Key=self.key("ckpt") + ".missing")
         except ClientError:
-            pass  # 404 expected
+            pass  # 404 expected: "is there a checkpoint to resume from?"
 
     def op_get_miss(self):
         try:
@@ -218,13 +246,15 @@ class Workload:
             pass
 
     def op_delete(self):
-        k, _ = self.reg.pick(remove=True)
-        if k is None:
+        keys = self.reg.take(1)
+        if not keys:
             return self.op_put()
-        self.s3.delete_object(Bucket=self.args.bucket, Key=k)
+        self.s3.delete_object(Bucket=self.args.bucket, Key=keys[0])
 
     def op_delete_batch(self):
-        keys = self.reg.take(random.randint(10, 200))
+        n, _ = self.reg.stats()
+        # At most a quarter of the working set, so one batch can't empty it.
+        keys = self.reg.take(min(random.randint(10, 200), max(1, n // 4)))
         if not keys:
             return self.op_put()
         self.s3.delete_objects(Bucket=self.args.bucket,
@@ -239,7 +269,7 @@ class Workload:
                 weights.pop(grow, None)
             weights["delete"] = weights.get("delete", 0) + 20
             weights["delete_batch"] = weights.get("delete_batch", 0) + 10
-        elif n < 100:
+        elif n < self.args.min_objects:
             weights["put"] = weights.get("put", 0) + 40
         ops = list(weights)
         return random.choices(ops, weights=[weights[o] for o in ops])[0]
@@ -347,7 +377,13 @@ def main():
     ap.add_argument("--threads", type=int, default=16, help="maximum concurrent workers")
     ap.add_argument("--think-ms", type=float, default=40, help="mean pause between a worker's requests")
     ap.add_argument("--max-objects", type=int, default=3000, help="working-set object cap")
+    ap.add_argument("--min-objects", type=int, default=300,
+                    help="working-set size below which PUTs are favoured")
     ap.add_argument("--max-gib", type=float, default=8, help="working-set size cap in GiB")
+    ap.add_argument("--head-miss", type=float, default=0.03,
+                    help="share of HEADs that ask for an absent key (404)")
+    ap.add_argument("--get-miss", type=float, default=0.01,
+                    help="share of full-object GETs that ask for an absent key (404)")
     ap.add_argument("--duration", type=float, default=0, help="seconds to run; 0 = until stopped")
     ap.add_argument("--process-name", help="process name, shown as the dashboard client label")
     ap.add_argument("--verbose", action="store_true", help="print every S3 error")
