@@ -151,6 +151,47 @@ func TestPipelineStop(t *testing.T) {
 		pipeline.Stop()
 		assert.False(t, pipeline.running)
 	})
+
+	t.Run("does_not_deadlock_with_exec_callback_in_flight", func(t *testing.T) {
+		tracer := &execOnStopTracer{MockTracer: NewMockTracer()}
+		pipeline := newPipeline(tracer, NewMockLibraryFinder(), PipelineConfig{Mode: ProbeModeAuto})
+		require.NoError(t, pipeline.Start())
+		require.NotNil(t, tracer.onExec)
+
+		stopped := make(chan struct{})
+		go func() {
+			pipeline.Stop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Stop() deadlocked waiting for the exec callback")
+		}
+	})
+}
+
+// execOnStopTracer mimics BPFTracer.Stop(), which waits for the exec
+// reader goroutine: an exec notification that arrives during shutdown
+// runs the pipeline's onExec callback while Stop() is waiting.
+type execOnStopTracer struct {
+	*MockTracer
+	onExec func(pid uint32)
+}
+
+func (m *execOnStopTracer) WatchExec(cb func(pid uint32)) error {
+	m.onExec = cb
+	return nil
+}
+
+func (m *execOnStopTracer) Stop() {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.onExec(uint32(os.Getpid()))
+	}()
+	<-done
+	m.MockTracer.Stop()
 }
 
 // TestPipelineEvents tests event processing.
