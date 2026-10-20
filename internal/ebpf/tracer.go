@@ -503,7 +503,7 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 
 	// Start reading events in a goroutine
 	t.wg.Add(1)
-	go t.readEvents()
+	go t.readEvents(reader)
 
 	return nil
 }
@@ -512,14 +512,15 @@ func (t *BPFTracer) Start(callback EventCallback) error {
 // reader.Read blocks; closing it during Stop() is what unblocks the call
 // and returns perf.ErrClosed, so shutdown exits cleanly. Any other error
 // logs once and backs off briefly so a wedged ring can't busy-spin a CPU.
-func (t *BPFTracer) readEvents() {
+// The reader is passed in because Stop() sets t.reader to nil.
+func (t *BPFTracer) readEvents(reader *perf.Reader) {
 	defer t.wg.Done()
 	const readErrBackoff = 100 * time.Millisecond
 
 	// ReadInto reuses one sample buffer; parseRawEvent copies out of it.
 	var record perf.Record
 	for {
-		err := t.reader.ReadInto(&record)
+		err := reader.ReadInto(&record)
 		if err != nil {
 			if errors.Is(err, perf.ErrClosed) {
 				return
