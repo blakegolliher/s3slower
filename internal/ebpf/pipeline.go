@@ -336,15 +336,16 @@ func knownClient(name string) string {
 // Stop stops the pipeline.
 func (p *Pipeline) Stop() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if !p.running {
+		p.mu.Unlock()
 		return
 	}
-
 	close(p.stopCh)
 	p.running = false
+	p.mu.Unlock()
 
+	// Not under p.mu: tracer.Stop() waits for the exec reader goroutine,
+	// whose onExec callback takes p.mu.
 	p.tracer.Stop()
 	p.tracer.DetachAll()
 	p.tracer.Close()

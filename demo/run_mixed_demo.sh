@@ -32,12 +32,15 @@ LANES=(mixed pipeline awscli elbencho s5cmd mc rclone curl)
 
 pidfile() { echo "$RUN_DIR/$1.pid"; }
 alive() { [[ -f "$(pidfile "$1")" ]] && sudo kill -0 "$(cat "$(pidfile "$1")")" 2>/dev/null; }
+# tree PID: PID and all of its descendants.
+tree() { local c; echo "$1"; for c in $(ps -o pid= --ppid "$1"); do tree "$c"; done; }
 
 # launch NAME CMD...: run detached in its own session, auto-stopped after
-# MAX_HOURS. timeout relays SIGTERM to the command on stop.
+# MAX_HOURS. timeout relays SIGTERM to the command on stop, and SIGKILLs it
+# if its cleanup has not finished 5 minutes later.
 launch() {
     local name=$1; shift
-    setsid nohup timeout "${MAX_HOURS}h" "$@" > "$RUN_DIR/$name.log" 2>&1 < /dev/null &
+    setsid nohup timeout -k 5m "${MAX_HOURS}h" "$@" > "$RUN_DIR/$name.log" 2>&1 < /dev/null &
     echo $! > "$(pidfile "$name")"
     echo "  started $name (pid $!, log $RUN_DIR/$name.log)"
 }
@@ -53,7 +56,7 @@ start() {
 
     echo "starting s3slower tracer (Prometheus :9000, request log in $RUN_DIR/s3slower-log)"
     sudo true # authenticate once up front
-    sudo setsid nohup timeout "${MAX_HOURS}h" "$BIN" run --prometheus --log-dir "$RUN_DIR/s3slower-log" \
+    sudo setsid nohup timeout -k 1m "${MAX_HOURS}h" "$BIN" run --prometheus --log-dir "$RUN_DIR/s3slower-log" \
         --log-max-size 50 > /dev/null 2> "$RUN_DIR/tracer.log" < /dev/null &
     echo $! > "$(pidfile tracer)"
     sleep 5 # let probes attach before traffic starts
@@ -93,7 +96,10 @@ stop() {
             echo "stopping $n"
             sudo kill -TERM "$(cat "$f")" 2>/dev/null || true
             for _ in $(seq 1 180); do alive "$n" || break; sleep 1; done
-            alive "$n" && echo "  $n did not exit within 3 minutes (pid $(cat "$f"))"
+            if alive "$n"; then
+                echo "  $n did not exit within 3 minutes; killing it"
+                sudo kill -KILL $(tree "$(cat "$f")") 2>/dev/null
+            fi
         fi
         rm -f "$f"
     done
