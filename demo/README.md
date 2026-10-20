@@ -95,8 +95,11 @@ throughput, p50/p99 and errors over the selected range.
 **Clients.** boto3 and the AWS CLI appear side by side; any other process is
 shown by name.
 
-**Errors & status.** The workloads' deliberate HEAD misses appear as 404s
-on HEAD_OBJECT, which is how missing-checkpoint checks look in production.
+**Errors & status.** The workloads' deliberate misses appear as 404s on
+HEAD_OBJECT and GET_OBJECT, which is how missing-checkpoint checks look in
+production. The mixed workload sends about 3% of its HEADs and 1% of its
+full GETs to absent keys (`--head-miss`, `--get-miss`); there are no other
+errors unless the endpoint returns them.
 
 ### Terminal view
 
